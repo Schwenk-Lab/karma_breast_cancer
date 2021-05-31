@@ -1,0 +1,469 @@
+---
+title: "antibody_quality_control"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+params: 
+  step_vec: 0
+  step_nr: 0
+  start_time: 0
+---
+Leo Dahl  
+2020-02-04
+
+This is step number `r params$step_nr` in a workflow containing the steps  
+`r params$step_vec`.  
+Main script started on `r params$start_time`, this step started on `r Sys.time()`.  
+Output files are generated in  
+`r "home/.../results/"`.
+
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+
+</details>
+
+
+
+# Antibody quality control
+
+Antibodies are filtered for quality and flagged if deemed of insufficient quality. The criteria are  
+1. too high MFI in empty wells,  
+2. low correlation between 96 duplicated samples and  
+3. high correlation to human IgG.  
+
+
+### 1. Empty-well MFI
+
+Any antibody with a too large MFI value in an empty well will be flagged since they may be too unspecific, according to $$\mathrm{MFI}_{empty-well}>mean(\mathrm{MFI}_{empty-well})+3\times sd(\mathrm{MFI}_{empty-well}).$$
+
+Antibodies are flagged if they have too high MFI in at least one of the 16 empty wells (maybe a bit harsh?). This results in the following antibodies being flagged
+
+```{r crit1 table}
+
+# Pick out the indices of the bad antibodies in each assay
+crit1_bad_idx <- lapply(crit1_high_mfi, 
+                        function(high_mfi_lists) unique(sort(unlist(high_mfi_lists))))
+
+crit1_bad_abs <- list("A1"=colnames(mfi_list$A1)[crit1_bad_idx[[1]]],
+                      "A2"=colnames(mfi_list$A2)[crit1_bad_idx[[2]]],
+                      "A3"=colnames(mfi_list$A3)[crit1_bad_idx[[3]]],
+                      "A4"=colnames(mfi_list$A4)[crit1_bad_idx[[4]]])
+
+crit1_abs_df <- data.frame(
+  "Antibody"=c(crit1_bad_abs$A1, crit1_bad_abs$A2, crit1_bad_abs$A3, crit1_bad_abs$A4),
+  "Assay"=c(rep("A1", length(crit1_bad_abs$A1)),
+            rep("A2", length(crit1_bad_abs$A2)),
+            rep("A3", length(crit1_bad_abs$A3)),
+            rep("A4", length(crit1_bad_abs$A4))),
+  "Index in array"=c(unlist(crit1_bad_idx))
+)
+
+datatable(crit1_abs_df, rownames=FALSE, 
+          caption="Antibodies with too high MFI in empty wells.", options=list(
+            columnDefs=list(list(className='dt-center', targets="_all")))
+          )
+
+# Add info to binder info dataframe
+binfo1$abqc_high_empty_mfi = binfo1$abqc_low_repl_corr =
+  binfo1$abqc_high_higg_corr = binfo1$abqc_fail_which <- 0
+for (bad_abs in crit1_bad_abs) {
+  binfo1[bad_abs, "abqc_high_empty_mfi"] <- 1
+  binfo1[bad_abs, "abqc_fail_which"] <- paste(binfo1[bad_abs, "abqc_fail_which"], 1, sep=",")
+}
+
+```
+
+
+### 2. Low correlation in replicates
+
+Antibodies with too low correlation ($\rho < 0.7$) between 96 replicated samples are flagged, since they are too inconsistent. 
+
+```{r Crit2 replicate correlation}
+
+crit2_cutoff <- 0.7
+
+# Compute Spearman correlation between replicates for each antibody, one array at a time
+corr_list <- lapply(mfi_list, 
+                    function(assay) apply(assay, 2, 
+                        function(column) 
+                          cor(x=column[rownames(sinfo[sinfo$replicate == 1, ])],
+                              y=column[rownames(sinfo[sinfo$replicate == 2, ])],
+                              method="spearman")))
+
+# Find antibodies with correlation lower than cutoff and their correlation coefficients
+crit2_bad_abs <- lapply(corr_list, function(corr) corr[which(corr < crit2_cutoff)])
+
+# Get their indices
+crit2_bad_idx <- vector("list", length(mfi_list))
+
+for (i in 1:length(crit2_bad_idx)) {
+  crit2_bad_idx[[i]] <- which(
+    colnames(mfi_list[[i]]) %in% c(names(crit2_bad_abs[[i]])))
+}
+
+
+```
+
+The result is this list of antibodies:
+
+```{r crit2 table}
+
+low_corr_abs_df <- data.frame(
+  "Antibody"=c(names(crit2_bad_abs$A1),
+               names(crit2_bad_abs$A2),
+               names(crit2_bad_abs$A3),
+               names(crit2_bad_abs$A4)),
+  "Assay"=c(rep("A1", length(crit2_bad_abs$A1)),
+            rep("A2", length(crit2_bad_abs$A2)),
+            rep("A3", length(crit2_bad_abs$A3)),
+            rep("A4", length(crit2_bad_abs$A4))),
+  "Correlation coefficient"=
+    round(c(crit2_bad_abs$A1,
+            crit2_bad_abs$A2,
+            crit2_bad_abs$A3,
+            crit2_bad_abs$A4), 3),
+  "Index in array"=unlist(crit2_bad_idx)
+)
+
+datatable(low_corr_abs_df, caption=paste0("Antibodies with low correlation (rho < ", crit2_cutoff, ") between 96 replicated samples."), rownames=F, options=list(
+            columnDefs=list(list(className='dt-center', targets="_all")))
+          )
+
+# Add info to binder info dataframe
+for (bad_abs in crit2_bad_abs) {
+  binfo1[names(bad_abs), "abqc_low_repl_corr"] <- 1
+  binfo1[names(bad_abs), "abqc_fail_which"] <- paste(binfo1[names(bad_abs), "abqc_fail_which"], 2, sep=",")
+}
+
+```
+
+
+### 3. High correlation to hIgG
+
+Antibodies that correlate well ($\rho > 0.5$) with human IgG are flagged.
+
+```{r Crit3 hIgG correlation}
+
+crit3_cutoff <- 0.5
+
+# Get regular expression that should be able to find the human IgG columns 
+higg_regex <- glob2rx("*human*IgG*")
+
+higg_idx <- lapply(mfi_list, 
+                   function(assay) grep(higg_regex, colnames(assay), ignore.case=TRUE))
+
+# loop with i to go through same indices of mfi_list (containing dataframes of the different assays), higg_idx which is a list of the same length as mfi_list, each element containing a list of the indices in that assay that have hIgG and finally crit3_cor which will contain four elements, each a list of the same length as the number of hIgG that the assay contains. crit3_cor has four lists (one per assay), each one containing a list for every hIgG that the assay contains and each such list containing the correlations for each antibody to that hIgG.
+# j loop for going through the hIgG indices in each assay
+# apply function to go through all columns in each assay and get the correlations with hIgG
+
+crit3_cor <- vector("list", length(mfi_list))
+for (i in 1:length(mfi_list)) {
+  crit3_cor[[i]] <- vector("list", length(higg_idx[[i]]))
+  for (j in 1:length(higg_idx[[i]])) {
+    higg_corr <- apply(mfi_list[[i]], 2, 
+                       function(column) cor(column, mfi_list[[i]][, higg_idx[[i]][j]], method="spearman"))
+    crit3_cor[[i]][[j]] <- higg_corr
+  }
+}
+
+# Check if correlation is higher than threshold
+crit3_all_bad_idx <- lapply(crit3_cor, 
+                        function(assay_corr) lapply(assay_corr, 
+                                           function(corr) which(corr > crit3_cutoff)))
+
+# Flag if too high correlation once (assays 1 and 2 have two hIgG beads)
+crit3_bad_idx <- lapply(crit3_all_bad_idx, 
+                        function(idx_lists) unique(unlist(idx_lists)))
+
+crit3_bad_abs <- list("A1"=colnames(mfi_list$A1)[crit3_bad_idx[[1]]],
+                      "A2"=colnames(mfi_list$A2)[crit3_bad_idx[[2]]],
+                      "A3"=colnames(mfi_list$A3)[crit3_bad_idx[[3]]],
+                      "A4"=colnames(mfi_list$A4)[crit3_bad_idx[[4]]])
+
+```
+
+Array 1 (used in assays 1 and 2) contains two human IgG beads, so all antibodies that have too high correlation even once are flagged. This gives these antibodies:
+
+```{r crit3 table}
+# Make table to present results
+crit3_abs_df <- data.frame(
+  "Antibody"=c(crit3_bad_abs$A1,
+               crit3_bad_abs$A2,
+               crit3_bad_abs$A3,
+               crit3_bad_abs$A4),
+  "Assay"=c(rep("A1", length(crit3_bad_idx[[1]])),
+            rep("A2", length(crit3_bad_idx[[2]])),
+            rep("A3", length(crit3_bad_idx[[3]])),
+            rep("A4", length(crit3_bad_idx[[4]]))),
+  "Index in array"=c(unlist(crit3_bad_idx))
+)
+
+datatable(crit3_abs_df, rownames=FALSE,
+          caption=paste0("Antibodies with too high correlation (rho > ", crit3_cutoff, ") to hIgG."),
+          options=list(
+            columnDefs=list(list(className='dt-center', targets="_all"))))
+
+# Add info to binder info datatable
+for (bad_abs in crit3_bad_abs) {
+  binfo1[bad_abs, "abqc_high_higg_corr"] <- 1
+  binfo1[bad_abs, "abqc_fail_which"] <- paste(binfo1[bad_abs, "abqc_fail_which"], 3, sep=",")
+}
+
+```
+
+### In summary
+
+In total this gives the following antibodies
+
+```{r total bad abs}
+
+# Add info to binder info data frame
+binfo1$abqc_fail <- 0
+binfo1[(binfo1$abqc_high_empty_mfi == 1 | binfo1$abqc_low_repl_corr == 1 |
+          binfo1$abqc_high_higg_corr == 1), "abqc_fail"] <- 1
+# Remove the "0," in the beginning of all non-zero values in the "abqc_fail_which" column that tells you which criteria the antibody failed at. 
+binfo1[binfo1$abqc_fail == 1, "abqc_fail_which"] <- 
+  sub("0,", "", binfo1[binfo1$abqc_fail == 1, "abqc_fail_which"])
+
+# Find antibodies that are flagged in assay 2 but not assay 1, mark them as 2 in abqc_fail. Also pick  out the values of the column that tells you which tests they failed at
+
+# Note: there are two human IgG antibodies each in A1 and A2 so the second gets ".1" at the end, before the "_A1" or "_A2", which is not in the binder name column --> These will be missed in the following code, but those antibodies are flagged in both A1 and A2 anyway so no problem in practice at the moment
+for (colName in c("abqc_high_empty_mfi", "abqc_low_repl_corr", "abqc_high_higg_corr", "abqc_fail")) {
+  flagA2notA1 <- setdiff(
+  binfo1$Binder.name[binfo1$Assay == "AY487" & binfo1[, colName] == 1],
+  binfo1$Binder.name[binfo1$Assay == "AY485" & binfo1[, colName] == 1])
+  
+  if (length(flagA2notA1) != 0) {
+    binfo1[paste0(flagA2notA1, "_A1"), colName] <- 2
+    binfo1[paste0(flagA2notA1, "_A1"), "abqc_fail_which"] <- 
+      binfo1[paste0(flagA2notA1, "_A2"), "abqc_fail_which"]
+  }
+}
+
+flagged_abs <- vector("list", length(mfi_list))
+for (i in 1:length(flagged_abs)) {
+  flagged_abs[[i]] <- list(
+    "index"=sort(unique(c(crit1_bad_idx[[i]],
+             crit2_bad_idx[[i]],
+             crit3_bad_idx[[i]]))),
+    "name"=colnames(mfi_list[[i]][sort(unique(c(crit1_bad_idx[[i]],
+                                         crit2_bad_idx[[i]],
+                                         crit3_bad_idx[[i]])))]),
+    "per_crit"=list("Crit1"=crit1_bad_abs[[i]],
+                    "Crit2"=names(crit2_bad_abs[[i]]),
+                    "Crit3"=crit3_bad_abs[[i]])
+    )
+}
+
+datatable(data.frame("Antibody"=c(flagged_abs[[1]][[2]],
+                                  flagged_abs[[2]][[2]],
+                                  flagged_abs[[3]][[2]],
+                                  flagged_abs[[4]][[2]]),
+                     "Assay"=c(rep("A1", length(flagged_abs[[1]][[1]])),
+                               rep("A2", length(flagged_abs[[2]][[1]])),
+                               rep("A3", length(flagged_abs[[3]][[1]])),
+                               rep("A4", length(flagged_abs[[4]][[1]]))),
+                     "Index in array"=c(flagged_abs[[1]][[1]],
+                                        flagged_abs[[2]][[1]],
+                                        flagged_abs[[3]][[1]],
+                                        flagged_abs[[4]][[1]]),
+                     "Failed criteria"=c(binfo1[
+                       binfo1$alt.assay.name == "A1" & binfo1$abqc_fail == 1, "abqc_fail_which"],
+                                         binfo1[
+                       binfo1$alt.assay.name == "A2" & binfo1$abqc_fail == 1, "abqc_fail_which"],
+                       binfo1[
+                       binfo1$alt.assay.name == "A3" & binfo1$abqc_fail == 1, "abqc_fail_which"],
+                       binfo1[
+                       binfo1$alt.assay.name == "A4" & binfo1$abqc_fail == 1, "abqc_fail_which"])),
+          caption="All flagged antibodies in the different arrays",
+          rownames=FALSE,
+          options=list(
+            columnDefs=list(list(className='dt-center', targets="_all")))
+          )
+
+unique_prot <- get_unique_prot(binfo1[binfo1$cet.fail != 1, ])
+
+# If an antibody occurs in multiple assays but is not flagged in all assays, flag it everywhere if it's flagged once
+# Keep old, assay-specific flagging too
+binfo1$abqc_fail_old <- binfo1$abqc_fail
+unique_ab <- unique(binfo1$Binder.name)
+unique_flagged_ab <- unique(binfo1[binfo1$abqc_fail != 0, "Binder.name"])
+binfo1[binfo1$Binder.name %in% unique_flagged_ab, "abqc_fail"] <- 1
+
+```
+
+Totally there were  
+`r length(flagged_abs[[1]][[1]])` flagged antibodies in assay 1,  
+`r length(flagged_abs[[2]][[1]])` flagged antibodies in assay 2,  
+`r length(flagged_abs[[3]][[1]])` antibodies that were flagged in assay 3 and  
+`r length(flagged_abs[[4]][[1]])` antibodies flagged in assay 4,  
+for a total of
+`r length(flagged_abs[[1]][[1]]) + length(flagged_abs[[2]][[1]]) + length(flagged_abs[[3]][[1]]) + length(flagged_abs[[4]][[1]])`
+flagged antibodies. Antibodies that occur in multiple arrays but are only flagged in some of them are considered unreliable and will be flagged in all arrays, taking the total number of flagged antibodies to `r length(which(binfo1$abqc_fail == 1))`. 
+
+Since some antibodies are shared between assays (and assay 2 is a replicate of assay 1 using the same SBA), the number of unique antibodies that were flagged is `r length(unique_flagged_ab)`
+
+
+```{r check corr to rabbit IgG and bare bead}
+
+# Cutoffs for correlation with Bare-bead and rIgG
+bb_cutoff <- 0.7
+rigg_cutoff <- 0.7
+
+# Do Bare-bead correlation on not normalised data since bare-beads removed before normalisation due to CET fail
+m <- rbind(mfi1, mfi2)
+m <- m[, -1]
+colnames(m) <- binfo1_w_cetfail$alt.ab.name
+mlist <- list("A1"=m[, binfo1_w_cetfail[binfo1_w_cetfail$alt.assay.name == "A1", "alt.ab.name"]],
+               "A2"=m[, binfo1_w_cetfail[binfo1_w_cetfail$alt.assay.name == "A2", "alt.ab.name"]],
+               "A3"=m[, binfo1_w_cetfail[binfo1_w_cetfail$alt.assay.name == "A3", "alt.ab.name"]],
+               "A4"=m[, binfo1_w_cetfail[binfo1_w_cetfail$alt.assay.name == "A4", "alt.ab.name"]])
+
+# Bare-bead correlation per assay
+bbcorr <- lapply(mlist, function(q) {
+  apply(q, 2, function(w) {
+    bb <- which(substr(colnames(q), 1, nchar("Bare.bead_A")) == "Bare.bead_A")
+    cor(w, q[, bb], method="spearman")
+    })
+  })
+
+# High or low bare-bead correlation
+bbcorr_high <- lapply(bbcorr, function(l) {
+   which(l > bb_cutoff | l < -bb_cutoff)
+})
+
+# Check CET status and AbQC status for Abs with high correlation
+high_bb_corr_cet_abqc <- lapply(bbcorr_high, function(l) {
+    cetfail <- names(l[which(binfo1_w_cetfail[names(l), "cet.fail"] == 1)])
+    abqcfail <- names(l[which(binfo1[names(l), "abqc_fail"] == 1)])
+    ncetfail <- table(binfo1_w_cetfail[names(l), "cet.fail"])
+    nabqcfail <- table(binfo1[names(l), "abqc_fail"])
+    cet_qc_merge <- unique(c(cetfail, abqcfail))
+    ok_abs <- setdiff(names(l), cet_qc_merge)
+    list("antibodies"=names(l),
+         "cet_fail"=cetfail,
+         "abqc_fail"=abqcfail,
+         "n_cet"=ncetfail,
+         "n_abqc"=nabqcfail,
+         "Passed_both_CET_and_AbQC"=ok_abs)
+     })
+
+# rIgG cutoff 
+# Do on normalised data since not removed yet. All rIgGs flagged in AbQC but not in CET
+# Also should be on normalised data since we don't want the technical variation and variation from equipment to affect the assessment of the antibodies! 
+
+# Correlations with rIgG
+riggcorr <- lapply(mfi_list, function(q) {
+  apply(q, 2, function(w) {
+    rigg <- which(substr(colnames(q), 1, nchar("Rabbit.IgG_")) == "Rabbit.IgG_")
+    cor(w, q[, rigg], method="spearman")
+    })
+  })
+
+# High correlation
+riggcorr_high <- lapply(riggcorr, function(l) {
+   which(l > rigg_cutoff | l < -rigg_cutoff)
+})
+
+high_rigg_corr_cet_abqc <- lapply(riggcorr_high, function(l) {
+    cetfail <- names(l[which(binfo1_w_cetfail[names(l), "cet.fail"] == 1)])
+    abqcfail <- names(l[which(binfo1[names(l), "abqc_fail"] == 1)])
+    ncetfail <- table(binfo1_w_cetfail[names(l), "cet.fail"])
+    nabqcfail <- table(binfo1[names(l), "abqc_fail"])
+    cet_qc_merge <- unique(c(cetfail, abqcfail))
+    ok_abs <- setdiff(names(l), cet_qc_merge)
+    list("antibodies"=names(l),
+         "cet_fail"=cetfail,
+         "abqc_fail"=abqcfail,
+         "n_cet"=ncetfail,
+         "n_abqc"=nabqcfail,
+         "Passed_both_CET_and_AbQC"=ok_abs)
+     })
+
+# Try on raw MFI as well
+# Correlations with rIgG
+riggcorr_raw <- lapply(mlist, function(q) {
+  apply(q, 2, function(w) {
+    rigg <- which(substr(colnames(q), 1, nchar("Rabbit.IgG_")) == "Rabbit.IgG_")
+    cor(w, q[, rigg], method="spearman")
+    })
+  })
+
+# High correlation
+riggcorr_high_raw <- lapply(riggcorr_raw, function(l) {
+   which(l > rigg_cutoff | l < -rigg_cutoff)
+})
+
+
+rigg_abqc_raw <- lapply(riggcorr_high_raw, function(l) {
+    cetfail <- names(l[which(binfo1_w_cetfail[names(l), "cet.fail"] == 1)])
+    abqcfail <- names(l[which(binfo1[names(l), "abqc_fail"] == 1)])
+    ncetfail <- table(binfo1_w_cetfail[names(l), "cet.fail"])
+    nabqcfail <- table(binfo1[names(l), "abqc_fail"])
+    cet_qc_merge <- unique(c(cetfail, abqcfail))
+    ok_abs <- setdiff(names(l), cet_qc_merge)
+    list("antibodies"=names(l),
+         "cet_fail"=cetfail,
+         "abqc_fail"=abqcfail,
+         "n_cet"=ncetfail,
+         "n_abqc"=nabqcfail,
+         "Passed_both_CET_and_AbQC"=ok_abs)
+     })
+
+
+```
+
+
+Antibody correlation between repeated arrays
+
+```{r, warning=F}
+
+binfo_A1 <- binfo1 %>% filter(alt.assay.name == "A1") 
+binfo_A1[paste0(repl_ass_ab, "_A1"), "repl_ass_cor"] <- repl_ass_cor
+binfo_A1[paste0(repl_ass_ab, "_A1"), "repl_ass_cor_no_epr"] <- repl_ass_cor_no_epr
+binfo_A1$abqc_fail <- as.character(binfo_A1$abqc_fail)
+binfo_A1$abqc_fail_old <- as.character(binfo_A1$abqc_fail_old)
+
+# One antibody missing due to strange name because of duplicate antibodies (antihuman IgG)
+binfo_A1["Anti.human.IgG_A1.1", c("repl_ass_cor", "repl_ass_cor_no_epr")] <- 
+	c(cor(mfi[, "Anti.human.IgG_A1.1"], 
+				mfi[, "Anti.human.IgG_A2.1"],
+				method="spearman"),
+		cor(mfi[no_epr_sampname, "Anti.human.IgG_A1.1"],
+				mfi[no_epr_sampname, "Anti.human.IgG_A2.1"],
+				method="spearman"))
+
+repl_assay_corrplt <- ggplot(binfo_A1 %>% mutate(order = rank(repl_ass_cor_no_epr))) + 
+	geom_point(aes(x = order, y = repl_ass_cor_no_epr)) + 
+	geom_hline(yintercept = median(binfo_A1$repl_ass_cor_no_epr), linetype = "dotted", size = 1) + 
+	labs(x = "Antibody, correlation order", y = "Spearman correlation", caption = paste0("Median correlation: ", median(binfo_A1$repl_ass_cor_no_epr %>% signif(2)))) + 
+  theme_classic()
+
+repl_assay_corrplt
+```
+
+
+

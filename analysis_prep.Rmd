@@ -1,0 +1,207 @@
+---
+title: "Prep for analysis"
+output: 
+  html_document:
+    code_folding: hide
+params: 
+  step_vec: 0
+  step_nr: 0
+  start_time: 0
+  step_arch: 0
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Leo Dahl  
+2020-02-27
+
+This is step number `r params$step_nr` in a workflow containing the steps  
+`r params$step_vec`.  
+Main script started on `r params$start_time`, this step started on `r Sys.time()`.  
+Output files are generated in  
+`r "home/.../results/"`.
+
+Normalisations that were performed:  
+**`r names(which(norm_opts == 1))`**  
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions  
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+  
+</details>  
+
+
+## Final preparation for analysis
+
+Final preparation of the data before analysis, antibodies that bind the same target will be removed so that there is only one antibody per protein. Since many antibodies have now been filtered out, the number of antibodies binding the same protein is probably different from in get_data.Rmd.
+
+```{r Targets bound by multiple antibodies}
+
+# Get ENSG ID that are targeted by multiple antibodies
+dupl_target <- unique(
+  binfo$ENSG.ID[
+    duplicated(binfo$ENSG.ID)
+    ])
+
+```
+
+
+This gives `r length(dupl_target)` proteins that are targeted by multiple antibodies. Antibodies are removed so that there is only one antibody per target, the antibody with the highest correlation between replicated samples is kept. 
+
+```{r Remove all but best correlated antibody}
+
+# Remove all but the ones with the highest correlation between replicates
+# While in the loop, make dataframe for showing in table
+# Use the gsub function to introduce spaces into names with multiple targets
+
+dupl_target_df <- data.frame("ENSG_ID"=gsub(",", ", ", dupl_target),
+                             "Gene_name"=rep("", length(dupl_target)),
+                             "Number_of_Abs"=rep(0, length(dupl_target)),
+                             "Ab_names"=rep("", length(dupl_target)),
+                             "Best_Ab"=rep(0, length(dupl_target)))
+
+# To mark removed Abs in binder info
+binfo$remove_dupl_target <- 0
+
+for (i in 1:length(dupl_target)) {
+  ab_names <- binfo$alt.ab.name[which(binfo$ENSG.ID == dupl_target[i])]
+  gene_name <- unique(binfo[binfo$ENSG.ID == dupl_target[i], "Gene.name"])
+  
+  dupl_target_df[i, "Ab_names"] <- paste0(ab_names, collapse=", ")
+  dupl_target_df[i, "Gene_name"] <- gsub(",", ", ", gene_name)
+  dupl_target_df[i, "Number_of_Abs"] <- length(ab_names)
+  
+  dupl_corr <- c()
+  for (ab_name in ab_names) {
+    dupl_corr[ab_name] <- cor(x=mfi_w_repl[mfi_w_repl$replicate == 1, ab_name],
+                              y=mfi_w_repl[mfi_w_repl$replicate == 2, ab_name],
+                              method="spearman")
+  }
+  
+  # Get the one with highest correlation
+  max_corr_idx <- which(dupl_corr == max(dupl_corr))
+  dupl_target_df[i, "Best_Ab"] <- names(dupl_corr[max_corr_idx])
+  
+  # remove it from the list to remove the remaining ones from the MFI data frame
+  dupl_corr <- dupl_corr[-max_corr_idx]
+  mfi <- mfi[, -which(colnames(mfi) %in% names(dupl_corr))]
+  
+  # Mark the bad ones in binder info data frame
+  binfo[names(dupl_corr), "remove_dupl_target"] <- 1
+  
+}
+
+unique_ab <- unique(binfo[binfo$remove_dupl_target == 0, "Binder.name"])
+
+repl_residuals <- repl_residuals[, colnames(mfi)[-1]]
+double_residuals <- double_residuals[, colnames(mfi)[-1]]
+
+```
+
+
+After keeping only one antibody for each target, we have `r length(unique_ab)` unique antibodies left, binding as many unique targets. 
+
+Finally, the normalised data is also scaled and centered. 
+
+```{r extreme outlier, eval=T}
+
+outlier_pca <- prcomp(mfi[, -1], scale.=T, center=T)
+outlier_df <- data.frame("sample"=substr(rownames(mfi), 
+                                         nchar(rownames(mfi)) - 3,
+                                         nchar(rownames(mfi))),
+                         "PC1"=outlier_pca$x[, 1],
+                         "PC2"=outlier_pca$x[, 2],
+                         "PC3"=outlier_pca$x[, 3])
+ol1 <- ggplot(outlier_df) + geom_point(aes(x = PC1, y = PC2))
+ol2 <- ggplot(outlier_df) + geom_point(aes(x = PC3, y = PC2))
+
+# One sample is more than 5 IQR away from 75 percentile in PC2, remove as outlier
+pc_iqr_outl <- apply(outlier_df[, -1], 2, function(x) {
+  iqr <- IQR(x)
+  q25 <- quantile(x, 0.25)
+  q75 <- quantile(x, 0.75)
+  names(which(x < q25 - 5*iqr | x > q75 + 5*iqr))
+}) %>% unlist()
+
+outlier_dist <- dist(mfi[, -1])
+outlier_clust <- hclust(outlier_dist)
+outlier_clust$labels <- rep("", nrow(outlier_df))
+outlier_clust$labels[which(rownames(outlier_df) %in% pc_iqr_outl)] = "Outlier"
+plot(outlier_clust)
+asdf <- mfi
+# Remove one sample that is an extreme outlier
+mfi <- mfi[-which(rownames(mfi) %in% pc_iqr_outl), ]
+sinfo <- sinfo[-which(rownames(sinfo) %in% pc_iqr_outl), ]
+
+```
+
+
+```{r scale n center}
+
+# Scale and center data
+mfi_noscale <- mfi
+mfi[, -1] <- scale(mfi[, -1], scale=T, center=T)
+repl_residuals <- scale(repl_residuals)
+double_residuals <- scale(double_residuals)
+
+# Options for using stepArchetypes or not and which package to use
+make_scree <- F
+no_scree <- F
+use_archetypes <- F
+use_archetypal <- F
+find_opt_k <- F
+
+if (arch_opts["package"] == 1) {
+  use_archetypes <- T
+  if (arch_opts["find_opt_k"] == 1) {
+    make_scree <- T
+  } else {
+    no_scree <- T
+  }
+} else if (arch_opts["package"] == 2) {
+  use_archetypal <- T
+  if(arch_opts["find_opt_k"] == 1) {
+    find_opt_k <- T
+  }
+}
+
+```
+
+In case the archetypes package is used and a scree plot should be made, the scree plot is made in this script so that the plot can be viewed when this script is finished running. 
+
+```{r Choose number of archetypes from the screeplot in the archetypal analysis results folder, eval=make_scree, results="hide"}
+
+k_totest <- 1:20
+# Can perform several repetitions to find the best model, but takes a lot of time
+set.seed(123)
+step_arch <- stepArchetypes(data=mfi[, -1], k=k_totest, nrep=3, method=robustArchetypes, verbose=F)
+
+pdf(file=paste0("/home/.../screeplots_", Sys.Date(), ".pdf"),
+    width=10,
+    height=7)
+
+# Plot the RSS of the models
+screeplot(step_arch, main="Robust archetypal analysis")
+dev.off()
+
+```
+

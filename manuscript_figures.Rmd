@@ -1,0 +1,772 @@
+---
+title: "Make manuscript figures"
+author: "Leo Dahl"
+date: "2020-11-12"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+<style type="text/css">
+
+h1 { 
+  font-size: 25px;
+  margin-top: 1.5cm;
+  margin-bottom: 0.5cm;
+}
+h2 { 
+  font-size: 18px;
+  margin-top: 1cm;
+  margin-bottom: 0.5cm;
+}
+
+</style>
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+
+```{r extra package}
+
+# For converting heatmap to ggplot object and make compatible with patchwork package
+library(ggplotify)
+
+```
+
+
+Manuscript figures
+==================
+
+This script generates a few special figures that will be included in the manuscript. Uses objects from many scripts, run everything except 'variation_inspection' up to 'archetypal_analysis' and then also run 'new_clinvar' and 'enrichment_analysis'. Also tables and certain values that will be included in the text. 
+
+***
+
+PCA, cluster counts and heatmap
+-------------------------------
+
+```{r pca and counts, fig.width=10, fig.height=8}
+
+library(ggplotify)
+ggheat <- as.ggplot(phm2)
+
+(pc12 + labs(tag = "A", colour = "Cluster") + theme_classic() + 
+    theme(legend.title = element_text(size = 16),
+          legend.text = element_text(size = 13)) + 
+		pc13 + labs(tag = "B", colour = "Cluster") + theme_classic() + 
+    theme(legend.title = element_text(size = 16),
+          legend.text = element_text(size = 13))) / 
+	(pc23 + labs(tag = "C", colour = "Cluster") + theme_classic() + 
+	   theme(legend.title = element_text(size = 16),
+	         legend.text = element_text(size = 13)) + 
+	 	count_plot + theme_classic() + 
+	   theme(legend.position = "none") + labs(tag = "D")) +
+	plot_layout(guides = "collect") 
+
+```
+
+
+```{r heatmap and volcano, fig.width=9, fig.height=9}
+
+plt_layout <- c(
+	area(t=1,b=6,l=1,r=3),
+	area(t=7,b=11,l=1,r=2)
+)
+(ggheat + labs(tag = "A")) + 
+	(de_volcano + labs(tag = "B")) +
+	plot_layout(design = plt_layout)
+
+```
+
+
+***
+
+Age, BMI and BMI-adjusted dense area
+------------------------------------
+
+```{r age bmi dense area, fig.width=15, warning=FALSE}
+
+(plot_results(arch_df, "cluster", "age", printplots=F, printp=F)$boxplot + 
+ 	labs(title = NULL, tag = "A")) + 
+    (plot_results(arch_df, "cluster", "bmi", printplots=F, printp=F)$boxplot + 
+     	labs(title = NULL, y = "BMI", tag = "B")) + 
+    (plot_results(arch_df, "cluster", "area.dens.adj", printplots=F, printp=F)$boxplot +
+     	labs(title = NULL, y = "BMI-adjusted dense area (cm^2)", tag = "C")) + 
+    plot_layout(guides = "collect") & 
+  theme_classic() &
+	theme(axis.title = element_text(size = 20),
+				axis.text = element_text(size = 16),
+				legend.title = element_text(size = 20),
+				legend.text = element_text(size = 16),
+				plot.tag = element_text(size = 20)) 
+
+```
+
+***
+
+Case-control status, HRT ever, HRT status, days between entry and HRT, cluster MHT and case/control status
+----------------------------------------------------------------------------------------------------------
+
+```{r case control hrt, fig.height=15, fig.width=14, warning=F, message=F}
+
+# Contingency tables/heatmaps for number of people in the clusters based on MHT and case control status
+clust_mht_class_counts <- arch_df %>%
+  select(cluster, class, hrt_ever_merge2) %>%
+  table() %>%
+  as.data.frame() %>%
+  group_by(cluster, class) %>%                        # Rescale data for fill colours in plot
+  mutate(scale_clustclass = Freq/sum(Freq)) %>%       # Rescale individually per cluster and class
+  mutate(percent_labs = paste0(Freq, "\n(", signif(100*scale_clustclass, 2), "%)"))
+
+contingency_heatmap <- ggplot(clust_mht_class_counts, aes(x = 1, y = hrt_ever_merge2)) + 
+  geom_tile(aes(fill = scale_clustclass)) + 
+  scale_fill_gradient2(low = "white", mid = "white", high = "salmon") + 
+  geom_text(aes(label = percent_labs), size = 6) + 
+  facet_grid(rows = vars(class),
+             cols = vars(cluster), 
+             switch = "x") + 
+  theme_classic() + 
+  theme(panel.grid = element_blank(),
+        axis.line = element_blank(),
+        axis.text.y = element_text(size = 18), 
+        axis.title = element_text(size = 20), 
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(), 
+        legend.position = "none", 
+        strip.text = element_text(size = 19),
+        strip.background.x = element_blank(),
+        panel.spacing.x = unit(0, "lines"),
+        panel.spacing.y = unit(0, "lines")) + 
+  labs(x = "Cluster", y = "Taken MHT ever") + 
+  scale_y_discrete(labels = c("0"="No", "1"="Yes"))
+
+casecontrol_hrt_plt_top <- ((plot_results(arch_df, "cluster", "class", printplots=F, printp=F)$rightplot + 
+		labs(fill = "Class")) +
+	(plot_results(arch_df, "cluster", "hrt_ever_merge2", printplots=F, printp=F)$rightplot + 
+			labs(fill = "MHT taken \never") + 
+			scale_fill_hue(labels = c("No", "Yes")))) /
+	((plot_results(arch_df, "cluster", "hrt_status_merge2", printplots=F, printp=F)$rightplot + 
+	 	labs(fill = "MHT status \nat entry") + 
+	 	scale_fill_hue(labels = c("Never taken", "Taken before", "Taking"))) +
+	(plot_results(arch_df, "cluster", "hrt_endentrydiff_merge", printplots=F, printp=F)$boxplot + 
+	 	labs(title = NULL, y = "Years between study entry \nand MHT treatment"))) + 
+  plot_annotation(tag_levels = "A") & 
+  theme_classic() & 
+	theme(axis.title = element_text(size = 20),
+				axis.text = element_text(size = 18),
+				legend.title = element_text(size = 20),
+				legend.text = element_text(size = 16), 
+				plot.tag = element_text(size = 20)) 
+
+casecontrol_hrt_plt_top / contingency_heatmap + 
+  theme(plot.tag = element_text(size = 20))
+
+
+```
+
+
+***
+
+Supplementary figures and tables
+================================
+
+Normalisation and adjustment
+----------------------------
+
+Plots comparing before and after adjustment for age, bmi, entry date
+
+```{r, fig.width=11, fig.height=16}
+
+((umap_after_removal$age + labs(title = "Age\nUnadjusted")) +
+   (umap_after_adj$age + labs(title = "Age\nAdjusted")) +
+   plot_layout(guides = "collect")) /
+  ((umap_after_removal$bmi + labs(title = "BMI\nUnadjusted")) +
+     (umap_after_adj$bmi + labs(title = "BMI\nAdjusted")) +
+     plot_layout(guides = "collect")) /
+  ((umap_after_removal$entrydate + labs(title = "Entry date\nUnadjusted")) +
+     (umap_after_adj$entrydate + labs(title = "Entry date\nAdjusted")) +
+     plot_layout(guides = "collect")) +
+  plot_annotation(tag_levels = "A") &
+  theme_classic() &
+  theme(axis.title = element_text(size = 15),
+						legend.title = element_text(size = 15),
+						legend.text = element_text(size = 13),
+						plot.title = element_text(size = 15))
+
+normplt_layout <- "
+A#
+A#
+BB
+BB
+CC
+CC
+DD
+DD
+"
+(ggplot(sinfo_t1 %>% select(hospital, UMAP1, UMAP2)) +
+  geom_point(aes(x = UMAP1, y = UMAP2, colour = hospital), size = 1.7, alpha = 0.9) +
+  labs(colour = "Sampling station") +
+   scale_colour_manual(values = RColorBrewer::brewer.pal(8, "Paired")[c(2,4,6,8)],
+                       labels = sort(unique(sinfo_t1$hospital)))) /
+   ((umap_after_removal$age + labs(title = "Age\nUnadjusted")) +
+      (umap_after_adj$age + labs(title = "Age\nAdjusted")) +
+      plot_layout(guides = "collect")) /
+   ((umap_after_removal$bmi + labs(title = "BMI\nUnadjusted")) +
+      (umap_after_adj$bmi + labs(title = "BMI\nAdjusted")) +
+      plot_layout(guides = "collect")) /
+   ((umap_after_removal$entrydate + labs(title = "Entry date\nUnadjusted")) +
+      (umap_after_adj$entrydate + labs(title = "Entry date\nAdjusted")) +
+      plot_layout(guides = "collect")) +
+  plot_annotation(tag_levels = "A") +
+  plot_layout(design = normplt_layout) &
+  theme_classic() &
+  theme(axis.title = element_text(size = 15),
+						legend.title = element_text(size = 15),
+						legend.text = element_text(size = 13),
+						plot.title = element_text(size = 15))
+
+normplt_layout <- "
+AAAA#
+AAAA#
+AAAA#
+AAAA#
+AAAA#
+BBBBB
+BBBBB
+BBBBB
+BBBBB
+BBBBB
+CCCCC
+CCCCC
+CCCCC
+CCCCC
+CCCCC
+DDDDD
+DDDDD
+DDDDD
+DDDDD
+DDDDD
+"
+
+(ggplot(sinfo_t1 %>% select(hospital, UMAP1, UMAP2)) +
+  geom_point(aes(x = UMAP1, y = UMAP2, colour = hospital), size = 1.7, alpha = 0.9) +
+  labs(colour = "Sampling station") +
+   scale_colour_manual(values = RColorBrewer::brewer.pal(8, "Paired")[c(2,4,6,8)],
+                       labels = sort(unique(sinfo_t1$hospital)))) /
+   ((umap_after_removal$age + labs(title = "Age\nUnadjusted")) +
+      (umap_after_adj$age + labs(title = "Age\nAdjusted")) +
+      plot_layout(guides = "collect")) /
+   ((umap_after_removal$bmi + labs(title = "BMI\nUnadjusted")) +
+      (umap_after_adj$bmi + labs(title = "BMI\nAdjusted")) +
+      plot_layout(guides = "collect")) /
+   ((umap_after_removal$entrydate + labs(title = "Entry date\nUnadjusted")) +
+      (umap_after_adj$entrydate + labs(title = "Entry date\nAdjusted")) +
+      plot_layout(guides = "collect")) +
+  plot_annotation(tag_levels = "A") +
+  plot_layout(design = normplt_layout) &
+  theme_classic() &
+  theme(axis.title = element_text(size = 15),
+						legend.title = element_text(size = 15),
+						legend.text = element_text(size = 13),
+						plot.title = element_text(size = 15))
+
+```
+
+Correlation before and after normalisation
+------------------------------------------
+
+```{r}
+cordens_nonorm + cordens_abspqn + 
+	plot_layout(guides = "collect") &
+  theme_classic()
+```
+
+Hospital UMAP
+-------------
+
+```{r, fig.height=5, fig.width=8.3}
+ggplot(sinfo_t1 %>% select(hospital, UMAP1, UMAP2)) +
+  geom_point(aes(x = UMAP1, y = UMAP2, colour = hospital), size = 1.7, alpha = 0.9) +
+  labs(colour = "Sampling station") +
+   scale_colour_manual(values = RColorBrewer::brewer.pal(8, "Paired")[c(2,4,6,8)],
+                       labels = sort(unique(sinfo_t1$hospital))) + 
+  theme_classic() + 
+  theme(axis.title = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        legend.text = element_text(size = 13),
+        plot.title = element_text(size = 15))
+```
+
+
+Other QC plots
+--------------
+
+```{r, fig.width=12, fig.height=10}
+
+plt_layout <- c(
+	area(t=1, b=2, l=1, r=2),
+	area(t=3, b=4, l=1, r=2),
+	area(t=1, b=2, l=3, r=4),
+	area(t=3, b=4, l=3, r=4),
+	area(t=1, b=2, l=5, r=6)
+)
+
+dbl_eucl_dens + repl_eucl_dens + 
+	tcv_plt + iqr_plt + 
+	repl_assay_corrplt + 
+	plot_layout(design = plt_layout) + 
+	plot_annotation(tag_levels = "A") &
+	theme(plot.tag = element_text(size = 12),
+				axis.title = element_text(size = 15),
+				axis.text = element_text(size = 12), 
+				legend.title = element_text(size = 15),
+				legend.text = element_text(size = 12),
+				plot.caption = element_text(size = 12)) 
+
+```
+
+Hierarchical clustering dendrogram (outlier check)
+--------------------------------------------------
+
+```{r}
+plot(outlier_clust)
+```
+
+
+Archetypal analysis related plots (also for supplementary)
+----------------------------------------------------------
+
+Scree plot from archetypal analysis (if find_optimal_kappas was run)
+
+```{r}
+
+if (find_opt_k) {
+	plot(1:maxkappa, k_opt$bestfit_sse1$sse, type="o", 
+			 xlab="Number of archetypes", ylab="SSE")
+	
+	# Horizontal and vertical lines for easier getting axis values at optimal k
+	clip(0, k_opt$optimal_kappas, 0, k_opt$bestfit_sse1$sse[k_opt$optimal_kappas])
+	abline(h=k_opt$bestfit_sse1$sse[k_opt$optimal_kappas], v=k_opt$optimal_kappas, lty="dashed", col="red", lwd=2.5)
+}
+
+```
+
+
+Largest archetype coefficients of the different clusters
+
+```{r, message=F, warning=F}
+
+plot_results(arch_maxalphas, "cluster", "alpha_max", printplots=F)$boxplot + labs(title = NULL, y = "Max archetype coefficient") + theme_classic() + 
+  theme(axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 15))
+
+```
+
+
+Proportions of sample pairs ending up in the same cluster
+
+```{r}
+
+prop_plt + 
+    scale_x_discrete(labels=paste0(as.character(levels(same_cluster_df$sample_type)), 
+       paste0(" pair\nn=", same_cluster_df %>% count(sample_type) %>% pull(n)))) +
+	theme(axis.title = element_text(size = 16),
+				axis.text = element_text(size = 14),
+				legend.title = element_blank(),
+				legend.text = element_text(size = 14)) 
+
+```
+
+Difference between largest and second largest archetype coefficient, for predicted coefficients of replicates excluded from archetypal analysis and real coefficients of the used replicates ("originals"?).
+
+```{r}
+
+pred_diff + real_diff + 
+	plot_annotation(tag_levels = "A") &
+	theme(axis.title = element_text(size = 15),
+				axis.text = element_text(size = 13),
+				legend.title = element_text(size = 15),
+				legend.text = element_text(size = 13), 
+				plot.tag = element_text(size = 15))
+
+```
+
+***
+
+Cluster statin use
+------------------
+
+```{r}
+
+plt_layout <- c(
+	area(t=1,b=4,l=1,r=10),
+	area(t=1,b=4,l=11,r=20)
+)
+
+(plot_results(arch_df, "cluster", "statin_ever", printplots=F, printp=F)$rightplot +
+  labs(fill = "Used statins \never") + 
+  scale_fill_hue(labels = c("0"="No", "1"="Yes"))) + 
+  (plot_results(arch_df %>% filter(statin_philicity != "None"), "cluster", "statin_philicity",
+             printplots=F, printp=F)$rightplot +
+  labs(fill = "Philicity of \nused statins")) + 
+	plot_layout(design = plt_layout) + 
+	plot_annotation(tag_levels = "A") & 
+	theme(axis.title = element_text(size = 12),
+				axis.text = element_text(size = 9),
+				legend.title = element_text(size = 11),
+				legend.text = element_text(size = 10), 
+				plot.tag = element_text(size = 12)) &
+  theme_classic()
+
+```
+
+Cluster Polygenic Risk Score (PRS)
+----------------------------------
+
+```{r, message=F}
+
+plot_results(arch_df %>% mutate(cluster = ifelse(cluster == 1, cluster, "Other")), 
+             "cluster", "PRS", printp=F, printplots=F)$boxplot + 
+  theme_classic() + 
+  plot_results(arch_df, "class", "PRS", printp=F, printplots=F)$boxplot + 
+  theme_classic() + 
+  scale_fill_manual(values = c("Case"="#F8766D",
+                               "Control"="#00BFC4")) +
+  plot_annotation(tag_levels = "A") &
+  theme(axis.title = element_text(size = 20),
+        axis.text = element_text(size = 18), 
+        legend.position = "none", 
+        plot.tag = element_text(size = 20)) &
+  labs(title = NULL)
+
+```
+
+
+Linear association with proteins of interest
+--------------------------------------------
+
+```{r}
+
+heatmap.2(t(as.matrix(hm2_df)),
+          cellnote = t(as.matrix(hm2_p)),
+          Colv = as.dendrogram(hm_clust), 
+          Rowv = F,
+          dendrogram = "column",
+          ColSideColors = col_annot$colours,
+          labRow = c("Adjusted\ndense area", 
+                     "MHT status"),
+          notecol = "black",
+          trace = "none",
+          key.title = "",
+          key.xlab = "Regression \ncoefficient",
+          col = cell_col, 
+          colsep = 1:nrow(hm2_df),
+          rowsep = 1:ncol(hm2_df), 
+          sepwidth = c(0.001, 0.001),
+          sepcolor = "grey",
+          margins = c(6, 12),
+          srtCol = 90,
+          density.info = "none",
+          cexRow = 1)
+
+legend("topright", title = "DE direction", 
+       legend = c("Upregulated", "Downregulated"),
+       fill = c("lightskyblue1", "lightcoral"),
+       cex = 0.7, box.lty = 0)
+
+```
+
+MFI levels of proteins of interest
+----------------------------------
+
+```{r, message=F, fig.width=15, fig.height=14}
+
+# Look at PTCH1 and ZP4
+ptchzp <- mfi %>% 
+  select(binfo %>% filter(Gene.name %in% c("PTCH1", "ZP4")) %>% pull(alt.ab.name))
+colnames(ptchzp) <- binfo[colnames(ptchzp), "Gene.name"]
+ptchzp$sample <- rownames(ptchzp) 
+ptchzp[, c("cluster", "class", "mht_ever")] <- 
+  arch_df[match(arch_df$sample, ptchzp$sample), c("cluster", "class", "hrt_ever_merge2")]
+
+ptchzp_list <- vector("list", 4)
+names(ptchzp_list) <- paste0(rep(c("PTCH1", "ZP4"), each=2), 
+                             c(".class", ".mht_ever"))
+
+for (prot in c("PTCH1", "ZP4")) {
+  for (cvar in c("class", "mht_ever")) {
+    plt <- plot_results(ptchzp %>% filter(!is.na(mht_ever)), 
+                        cvar, prot, printplots=F, printp=F)$boxplot + 
+      labs(title = NULL, x = ifelse(cvar == "mht_ever", "MHT taken ever", "Class")) + 
+      theme_classic() + 
+      theme(axis.title = element_text(size = 20),
+            axis.text = element_text(size = 18), 
+            legend.position = "none", 
+            plot.tag = element_text(size = 20))
+    
+    ptchzp_list[[paste0(prot, ".", cvar)]] <- plt
+  }
+}
+
+wrap_plots(ptchzp_list) + plot_annotation(tag_levels = "A")
+
+```
+
+
+Tables of cohort demographics and archetype cluster characterstics
+------------------------------------------------------------------
+
+Sample demographics tables (without and with doubles)
+
+```{r samp table}
+
+# table strata and labels defined in get_data.Rmd
+table1(tbl1_strata, tbl1_labels)
+table1(tbl1_d_strata, tbl1_labels)
+
+# Use the term MHT instead of HRT
+tbl1_labels <- list(
+  variables=list(Sampling.age="Age",
+                 bmi="BMI",
+                 hospital="Sampling station",
+                 postmenop="Menopausal status", 
+                 area.dens="Dense area (cm2)",
+  							 hrt_status_merge="MHT status",
+  							 statin_status="Statin status",
+  							 smoke_pack_year="Smoking (packs per year)",
+  							 alcohol_g_week="Alcohol intake (g per week)", 
+  							 parity="Ever given birth", 
+                 er_merge="ER status",
+                 pr_merge="PR status",
+                 her2_merge="HER2 status",
+  							 inv_merge="Invasiveness",
+                 tsize_merge="Tumour size",
+                 n.recode="Lymph node metastasis",
+                 nhg_merge="Nottingham Histologic Grade"
+                 )
+)
+
+cont_var <- c("Sampling.age", "bmi", "area.dens", "smoke_pack_year", "alcohol_g_week")
+cat_var <- c("hospital", "postmenop", "hrt_status_merge", "statin_status", "parity")
+
+# Wilcoxon test for continuous variables (not age since matched)
+tbl1_p_cont <- sapply(cont_var, function(clinvar) {
+	wilcox.test(sinfo_t1 %>% filter(Class == "Case") %>% pull(clinvar), 
+							sinfo_t1 %>% filter(Class == "Control") %>% pull(clinvar))$p.value
+}) 
+
+print(tbl1_p_cont)
+
+# Fisher test for categorical variables (not sampling location since matched)
+tbl1_p_cat <- sapply(cat_var, simplify = F,function(clinvar) {
+	# Get counts for contingency table
+	casecounts <- sinfo_t1 %>% filter(Class == "Case") %>% pull(clinvar) %>% table()
+	controlcounts <- sinfo_t1 %>% filter(Class == "Control") %>% pull(clinvar) %>% table()
+	
+	grp <- sinfo_t1 %>% filter(Class != "Double") %>% pull(clinvar) %>% as.character() %>% unique()
+	grp <- grp[!is.na(grp)]
+	
+	cont_tbl <- data.frame(matrix(nrow=length(grp), 
+																ncol=2))
+	rownames(cont_tbl) <- grp
+	colnames(cont_tbl) <- c("Case", "Control")
+	
+	cont_tbl[grp, "Case"] <- as.numeric(casecounts[grp])
+	cont_tbl[grp, "Control"] <- as.numeric(controlcounts[grp])
+	
+	fisher.test(cont_tbl)$p.value
+})
+
+print(tbl1_p_cat)
+
+
+# Make table that includes the p-values
+
+a <- sinfo_t1 %>% filter(Class != "Double")
+a$Class <- factor(a$Class, 
+									levels=c("Case", "Control", "pval"), 
+									labels=c("Case", "Control", "P-value"))
+
+# Pretty much the same as the P-value example from the table1 vignette, but with the p-values taken from the previously calculated ones and with "-" for tumour characteristics of controls
+rndr <- function(x, name, ...) {
+    if (length(x) == 0 &
+  		name %in% union(cont_var, cat_var)) {
+      y <- a[, name]
+      s <- rep("", length(render.default(x=y, name=name, ...)))
+      if (name %in% cont_var) {
+          p <- tbl1_p_cont[name]
+      } else if (name %in% cat_var) {
+          p <- tbl1_p_cat[[name]]
+      } 
+      s[2] <- sub("<", "&lt;", format.pval(p, digits=3, eps=0.001))
+      s
+    } else if (length(x) == 0 &
+  		!(name %in% union(cont_var, cat_var))) {
+    	""
+    } else {
+    	# Tumour characteristics
+    	if (length(x) %in% c(nrow(a %>% filter(Class == "Control")),
+    											 nrow(sinfo_t1 %>% filter(Class != "Double"))) &
+    			name %in% c("er_merge", "pr_merge", "her2_merge", "inv_merge", "tsize_merge", "n.recode", "nhg_merge")) {
+    		s <- rep("-", length(render.default(x=x, name=name, ...)))
+    		s[1] <- ""
+    		s
+    	} else {
+    		render.default(x=x, name=name, ...)	
+    	}
+    }
+}
+
+rndr.strat <- function(label, n, ...) {
+    ifelse(n==0, label, render.strat.default(label, n, ...))
+}
+
+t1_strat <- c(list(Total=a), split(a, a$Class))
+
+table1(t1_strat, tbl1_labels, render=rndr, render.strat=rndr.strat, overall="Total")
+
+sinfo_t1 %>% filter(Class != "Double") %>% 
+	group_by(Class) %>%
+	summarise(minMD=min(area.dens, na.rm=T),
+						maxMD=max(area.dens, na.rm=T)) %>%
+	as.data.frame()
+
+# Make one that includes doubles too
+rndr.dbl <- function(x, name, ...) {
+    if (length(x) %in% c(nrow(sinfo_t1 %>% filter(Class == "Control")),
+                         nrow(sinfo_t1 %>% filter(Class == "Double")),
+    										 nrow(sinfo_t1)) &
+        name %in% c("er_merge", "pr_merge", "her2_merge", "inv_merge", "tsize_merge", "n.recode", "nhg_merge")) {
+        s <- rep("-", length(render.default(x=x, name=name, ...)))
+        s[1] <- ""
+        s
+    } else {
+        render.default(x=x, name=name, ...)
+    }
+}
+
+table1(tbl1_d_strata, tbl1_labels, render=rndr.dbl, overall="Total")
+
+```
+
+
+Archetype cluster table 
+
+```{r arch table}
+
+# Table of characteristics of archetype clusters
+arch_tbl_df <- arch_df
+
+# Change some variables into factors for proper labelling 
+arch_tbl_df$hrt_status_merge2 <- factor(arch_tbl_df$hrt_status_merge2, 
+																				levels=c("0", "1", "2"), 
+																				labels=c("Never taken", "Taken before", "Taking at entry"))
+
+arch_tbl_df$statin_status <- factor(arch_tbl_df$statin_status, 
+																		levels=c("0", "1", "2"), 
+																		labels=c("Never taken", "Taken before", "Taking at entry"))
+
+arch_tbl_df$postmenop <- factor(arch_tbl_df$postmenop, 
+																levels=c("0", "1"), 
+																labels=c("Premenopausal", "Postmenopausal"))
+
+arch_tbl_df$parity <- factor(arch_tbl_df$parity, 
+														 levels=c("0", "1"),
+														 labels=c("Never given birth", "Has given birth"))
+
+arch_tbl_df$er_merge <- factor(arch_tbl_df$er_merge,
+															 levels=c("0", "1"),
+															 labels=c("Negative", "Positive"))
+
+arch_tbl_df$pr_merge <- factor(arch_tbl_df$pr_merge, 
+															 levels=c("0", "1"), 
+															 labels=c("Negative", "Positive"))
+
+arch_tbl_df$her2_merge <- factor(arch_tbl_df$her2_merge, 
+																 levels=c("0", "1"), 
+																 labels=c("Negative", "Positive"))
+arch_tbl_df$inv_merge <- factor(arch_tbl_df$inv_merge, 
+																levels=c("0", "1"), 
+																labels=c("Cancer in situ", "Invasive"))
+
+arch_tbl_df$n.new <- factor(arch_tbl_df$n.new, 
+														levels=c("0", "1"), 
+														labels=c("No", "Yes"))
+
+arch_lbl1<- list(
+	variables=list(class="Case control status", 
+								 age="Age", 
+								 bmi="BMI",
+								 hrt_status_merge2="MHT status",
+								 statin_status="Statin status",
+								 postmenop="Menopausal status",
+								 area.density="Dense area (cm2)", 
+								 area.dens.adj="BMI- and age-adjusted dense area (cm2)",
+								 smoke_pack_year="Smoking (packs per year)",
+								 alcohol_g_week="Alcohol intake (g per week)",
+								 parity="Ever given birth"), 
+	groups=list("", "Archetype cluster")
+)
+
+arch_lbl2 <- list(
+	variables=list(er_merge="ER status", 
+								 pr_merge="PR status", 
+								 her2_merge="HER2 status", 
+								 inv_merge="Invasiveness",
+								 tsize_merge="Tumour size (TNM T)",
+								 n.new="Lymph node metastasis (TNM N)", 
+								 NHG_merge="Nottingham Histologic Grade"),
+	groups=list("", "Archetype cluster")
+)
+
+arch_str1 <- c(list(Total=arch_tbl_df), split(arch_tbl_df, arch_tbl_df$cluster))
+arch_str2 <- c(list(Total=arch_tbl_df %>% filter(class == "Case")),
+							 split(arch_tbl_df %>% filter(class == "Case"),
+							 			 arch_tbl_df %>% filter(class == "Case") %>% pull(cluster)))
+
+arch_tbl1 <- table1(arch_str1, arch_lbl1, groupspan=c(1, n_arch))
+arch_tbl2 <- table1(arch_str2, arch_lbl2, groupspan=c(1, n_arch))
+
+arch_tbl1
+arch_tbl2
+
+```
+
+
+```{r save the data}
+
+# Saving the data 
+save(sinfo, sinfo_t1, binfo, arch, arch_df, mfi, file="/home/.../results/archetypal_results.Rdata")
+
+```
+
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+
+</details>

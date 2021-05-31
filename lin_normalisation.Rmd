@@ -1,0 +1,519 @@
+---
+title: "Linear normalisation"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+params: 
+  step_vec: 0
+  step_nr: 0
+  start_time: 0
+  norms: 0
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(knitr.duplicate.label = "allow")
+```
+
+Leo Dahl  
+2020-02-25
+
+This is step number `r params$step_nr` in a workflow containing the steps  
+`r params$step_vec`.  
+Main script started on `r params$start_time`, this step started on `r Sys.time()`.  
+Output files are generated in  
+`r "home/.../results/"`.
+
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+
+</details>
+
+
+# Normalisation by linear regression model
+
+So far, the data has been normalised for techincal variation using **`r names(params$norms[params$norms == 1])`**. Now the data will be adjusted for other factors such as age and study entry date. 
+
+#### Removing flagged antibodies
+
+Start by removing the antibodies that were flagged in the antibody quality control. The data contains `r length(which(binfo1$alt.assay.name == "A1"))`, 
+`r length(which(binfo1$alt.assay.name == "A2"))`, 
+`r length(which(binfo1$alt.assay.name == "A3"))` and 
+`r length(which(binfo1$alt.assay.name == "A4"))` 
+antibodies in assays A1, A2, A3 and A4, respectively, before removal. This corresponds to `r length(unique_prot)` unique proteins targeted by `r length(unique_ab)` unique antibodies (note that A1 and A2 contain the same antibodies). 
+
+Plotting a UMAP projection of the MFI values (only for cases, controls and doubles) and colouring by different parameters results in the following plots
+
+```{r UMAP scatter plots before removal, warning=F}
+
+umap_bf_removal <- plot_umap(umap_casecontrol(mfi, sinfo),
+          sinfo[sinfo$Class == "Case" | sinfo$Class == "Control" | sinfo$Class == "Other", ], T, F)
+umap_bf_removal$age
+umap_bf_removal$bmi
+umap_bf_removal$entrydate
+
+```
+
+
+```{r}
+# New binder info without A2 and flagged antibodies, also those lacking ENSG ID since they are either controls or Abs that have failed homology tests 
+binfo_all <- binfo1
+binfo <- binfo1[binfo1$alt.assay.name != "A2" & binfo1$abqc_fail == 0 &
+                  binfo1$ENSG.ID != "", ]
+```
+
+A look at the CV% and IQR of binders
+
+```{r techincal and biological cv}
+
+# Look at techincal and biological CV of antibodies
+cv <- function(invec) 100*sqrt(exp(sd(invec)**2) - 1)
+
+b.cv <- apply(mfi[sinfo %>% filter(Class %in% c("Case", "Control", "Other") & replicate != "2") %>% pull(new.names), 
+									binfo$alt.ab.name], 2, cv)
+t.cv <- apply(mfi[sinfo %>% filter(Class == "Pool") %>% pull(new.names), 
+									binfo$alt.ab.name], 2, cv)
+
+cvdf <- data.frame("binder"=names(b.cv), 
+									 "assay"=binfo[names(b.cv), "alt.assay.name"], 
+									 "b.CV"=b.cv, 
+									 "t.CV"=t.cv[names(b.cv)],
+									 "b.CV.rankall"=rank(b.cv),
+									 "t.CV.rankall"=rank(t.cv[names(b.cv)]))
+
+cvdf$t.CV.rankassay = cvdf$b.CV.rankassay <- NA
+for (aname in c("A1", "A2", "A3", "A4")) {
+	cvdf[cvdf$assay == aname, "b.CV.rankassay"] <- rank(cvdf[cvdf$assay == aname, "b.CV"])
+	cvdf[cvdf$assay == aname, "t.CV.rankassay"] <- rank(cvdf[cvdf$assay == aname, "t.CV"])
+}
+
+# Plot CV for technical variation and IQR for biological variation
+tcv_plt <- ggplot(cvdf) + 
+	geom_point(aes(x = t.CV.rankall, y = t.CV)) + 
+	geom_hline(yintercept = median(cvdf$t.CV), linetype = "dotted", size = 1) + 
+	labs(x = "Antibody, CV order", y = "Technical CV%", caption = paste0("Median t.CV: ", median(cvdf$t.CV) %>% signif(2))) + 
+  theme_classic()
+tcv_plt
+
+ab_iqr <- apply(mfi[sinfo %>% 
+											filter(Class %in% c("Case", "Control", "Other")) %>% 
+											pull(new.names),
+										binfo$alt.ab.name], 2, IQR)
+
+iqrdf <- data.frame(ab_iqr, order=rank(ab_iqr))
+
+iqr_plt <- ggplot(iqrdf) + 
+	geom_point(aes(x = order, y = ab_iqr)) + 
+	geom_hline(yintercept = median(iqrdf$ab_iqr), linetype = "dotted", size = 1) + 
+	labs(x = "Antibody, IQR order", y = "IQR", 
+			 caption = paste0("Median IQR: ", median(iqrdf$ab_iqr) %>% signif(2))) + 
+  theme_classic()
+iqr_plt
+
+```
+
+Euclidean distance and correlation between pairs of samples (double, replicate, random)
+
+```{r euclidean distance and correlation of samples, message=F}
+
+# Make function that computes euclidean distance or correlation between a number of random sample pairs, not very general function
+rnd_eucl_corr <- function(out_len, method="distance") {
+	out_vec <- vector("numeric", out_len)
+	
+	if (method == "distance") {
+		
+		for (i in 1:out_len) {
+			rnd_samp <- sinfo %>% 
+				filter(Class %in% c("Case", "Control") & replicate != "2") %>% 
+				slice(sample(sinfo %>% 
+										 	filter(Class %in% c("Case", "Control") & replicate != "2") %>% 
+										 	nrow(), 2)) %>%
+				pull(new.names)
+			out_vec[i] <- dist(mfi[rnd_samp, binfo$alt.ab.name])
+		}
+		
+	} else if (method == "correlation") {
+		
+		for (i in 1:out_len) {
+			rnd_samp <- sinfo %>% 
+				filter(Class %in% c("Case", "Control") & replicate != "2") %>% 
+				slice(sample(sinfo %>% 
+										 	filter(Class %in% c("Case", "Control") & replicate != "2") %>% 
+										 	nrow(), 2)) %>%
+				pull(new.names)
+			out_vec[i] <- cor(t(mfi[rnd_samp[1], binfo$alt.ab.name]),
+												t(mfi[rnd_samp[2], binfo$alt.ab.name]), 
+												method="spearman")
+		}
+	}
+	return(out_vec)
+}
+
+set.seed(123)
+# Euclidean distances between doubles
+dbl_eucl <- sapply(unique(sinfo %>% 
+														filter(Class == "Other" & replicate != "2") %>%
+														pull(Tube.label)), 
+									 function(x) {
+									 	
+									 	dist(mfi[sinfo %>% 
+									 					 	filter(Tube.label == x & replicate != "2") %>% 
+									 					 	pull(new.names), binfo$alt.ab.name])
+									 
+									 	})
+
+rnd_eucl_dbl <- rnd_eucl_corr(length(dbl_eucl))
+
+# Euclidean distances between replicated samples
+repl_eucl <- sapply(unique(sinfo %>% 
+													 	filter(replicate %in% c("1", "2")) %>% 
+													 	pull(Sample.id)), 
+										function(x) {
+											
+											dist(mfi[sinfo %>% 
+															 	filter(Sample.id == x) %>% 
+															 	pull(new.names),
+															 binfo$alt.ab.name])
+											
+										})
+
+rnd_eucl_repl <- rnd_eucl_corr(length(repl_eucl))
+
+# Correlation between doubles
+dbl_corr <- sapply(unique(sinfo %>% 
+														filter(Class == "Other" & replicate != "2") %>%
+														pull(Tube.label)), 
+									 function(x) {
+									 	
+									 	dbl_samp <- sinfo %>% 
+									 		filter(Tube.label == x & replicate != "2") %>%
+									 		pull(new.names)
+									 	cor(t(mfi[dbl_samp[1], binfo$alt.ab.name]),
+									 			t(mfi[dbl_samp[2], binfo$alt.ab.name]),
+									 			method="spearman")
+									 })
+
+rnd_corr_dbl <- rnd_eucl_corr(length(dbl_corr), "correlation")
+
+# Correlation between replicated samples
+repl_corr <- sapply(unique(sinfo %>% 
+													 	filter(replicate %in% c("1", "2")) %>%
+													 	pull(Sample.id)),
+										function(x) {
+											
+											repl_samp <- sinfo %>%
+												filter(Sample.id == x) %>%
+												pull(new.names)
+											cor(t(mfi[repl_samp[1], binfo$alt.ab.name]), 
+													t(mfi[repl_samp[2], binfo$alt.ab.name]), 
+													method="spearman")
+											
+										})
+
+rnd_corr_repl <- rnd_eucl_corr(length(repl_corr), "correlation")
+
+# For plotting
+dbl_stats <- data.frame(dbl_eucl, dbl_corr, rnd_eucl_dbl, rnd_corr_dbl) %>% melt()
+repl_stats <- data.frame(repl_eucl, repl_corr, rnd_eucl_repl, rnd_corr_repl) %>% melt()
+
+# Save plots for QC summary plot in manuscript_figures.Rmd
+dbl_eucl_dens <- ggplot(dbl_stats %>% filter(variable %in% c("dbl_eucl", "rnd_eucl_dbl"))) + 
+	geom_density(aes(x = value, y = ..scaled.., colour = variable), size = 2) + 
+	labs(x = "Euclidean distance", y = "Density", colour = "Sample") + 
+	scale_colour_hue(labels = c("dbl_eucl"="Double", "rnd_eucl_dbl"="Random")) + 
+	xlim(2, 15) + 
+  theme_classic()
+repl_eucl_dens <- ggplot(repl_stats %>% filter(variable %in% c("repl_eucl", "rnd_eucl_repl"))) +
+	geom_density(aes(x = value, y = ..scaled.., colour = variable), size = 2) +
+	labs(x = "Euclidean distance", y = "Density", colour = "Sample") + 
+	scale_colour_hue(labels = c("repl_eucl"="Replicate", "rnd_eucl_repl"="Random")) +
+	xlim(2, 15) +
+  theme_classic()
+
+dbl_eucl_dens
+repl_eucl_dens
+
+```
+
+
+```{r Remove bad abs and replicate samples and assay}
+# Keep mfi data frame with replicates for use in analysis prep script
+mfi_w_repl <- mfi[
+  rownames(sinfo[sinfo$replicate == 1 | sinfo$replicate == 2, ]),
+  c("sample.antibody", binfo$alt.ab.name)]
+mfi_w_repl$replicate <- sinfo[rownames(mfi_w_repl), "replicate"]
+
+# Remove replicate samples and replicate assay, as well as empty samples and pools
+sinfo_w_repl <- sinfo
+sinfo <- sinfo[(sinfo$replicate == 0 | sinfo$replicate == 1)
+               & (is.na(sinfo$entry.date) == F & sinfo$entry.date != ""), ]
+
+# MFIs and sample info of replicates to use for estimating their residuals
+repl_sinfo <- sinfo_w_repl[which(sinfo_w_repl$replicate == 2 & sinfo_w_repl$Class != "Pool"), ]
+repl_mfi <- mfi_w_repl[rownames(repl_sinfo), -1]
+
+mfi <- mfi[sinfo$new.names, 
+           c("sample.antibody", binfo$alt.ab.name)]
+
+unique_prot <- get_unique_prot(binfo)
+unique_ab <- unique(binfo$Binder.name)
+
+```
+
+
+```{r Remove doubles before analysis}
+
+# Remove doubles before performing linear normalisation
+# Keep the first sample of doubles (or whichever if same age at sampling)
+doub <- unique(sinfo[which(sinfo$Class == "Other"), "Tube.label"])
+double_indices <- c()
+for (d in doub) {
+  samps <- which(sinfo$Tube.label == d)
+  ages <- sinfo[samps, "Sampling.age"]
+  
+  if (ages[1] == ages[2]) {
+    double_indices <- append(double_indices, samps[1]) 
+  } else {
+    double_indices <- append(double_indices, samps[which(ages == max(ages))])
+  }
+}
+
+mfi_w_doubles <- mfi
+mfi <- mfi[-double_indices, ]
+
+sinfo_w_doubles <- sinfo
+sinfo <- sinfo[-double_indices, ]
+
+# MFIs and sample info of doubles to use for estimating their residuals
+double_sinfo <- sinfo_w_doubles[double_indices, ]
+double_sinfo <- double_sinfo[which(is.na(double_sinfo$bmi) == F), ] # Remove those missing BMI information
+double_mfi <- mfi_w_doubles[rownames(double_sinfo), -1]
+
+### Save MFI for later regression with proteins of interest and clinical variables
+mfi_regr <- mfi
+
+```
+
+
+After removing the flagged antibodies, as well as all control antibodies and the antibodies missing binder info, the assays contain 
+`r length(which(binfo1$alt.assay.name == "A1" & binfo1$abqc_fail == 0))` (A1 after removing union of flagged antibodies in A1 & A2), 
+`r length(which(binfo1$alt.assay.name == "A3" & binfo1$abqc_fail == 0))` (A3) and 
+`r length(which(binfo1$alt.assay.name == "A4" & binfo1$abqc_fail == 0))` (A4) 
+antibodies. In total there are `r length(unique_ab)` unique antibodies that bind `r length(unique_prot)` unique proteins. 
+
+Plotting UMAP projections again gives these plots
+
+```{r UMAP scatter plots after removal, warning=F}
+
+# Keep the plots to merge with others for reports
+umap_after_removal <- plot_umap(umap_casecontrol(mfi, sinfo), 
+          sinfo[sinfo$Class == "Case" | sinfo$Class == "Control" | sinfo$Class == "Other", ],
+          T, printall=F)
+
+# Print some here
+umap_after_removal$age
+umap_after_removal$bmi
+umap_after_removal$entrydate
+
+```
+
+```{r logreg and clogit options, message=F, warning=F}
+
+do_logreg <- ifelse(linnorm_opts["logreg"] == 1, T, F)
+
+do_clogit <- ifelse(linnorm_opts["clogit"] == 1, T, F)
+
+# If stuff here
+if (do_logreg & do_clogit) {
+	render(input = paste0(script_dir, "logreg_and_clogit.Rmd"), 
+				 output_file = paste0(out_dir, Sys.Date(), "_logreg_and_clogit.html"))
+} else if (do_logreg & !do_clogit) {
+	render(input = paste0(script_dir, "logreg_and_clogit.Rmd"),
+				 output_file = paste0(out_dir, Sys.Date(), "_logreg.html"))
+} else if (!do_logreg & do_clogit) {
+	render(input = paste0(script_dir, "logreg_and_clogit.Rmd"), 
+				 output_file = paste0(out_dir, Sys.Date(), "_clogit.html"))
+}
+
+```
+
+
+#### Normalisation
+
+The data is normalised for age, BMI and entry date by generating a linear regression model for each protein where age and entry date are the independent variables. The acquired residuals are used as the protein measurement "values". 
+
+```{r Linear regression normalisation, eval=T}
+
+# Loop to make linear models for each protein, to normalise for age and entry date
+
+# Get variables to adjust for, make formula for linear model
+vars <- names(which(linnorm_opts[-which(names(linnorm_opts) %in% c("logreg", "clogit"))] == 1))
+linfun <- as.formula(
+  paste("values", paste0(vars, collapse=" + "), sep=" ~ ")
+)
+
+# To save p-values (why not just make data frame to begin with? whatever)
+age_date_lm_pval <- vector("list", (ncol(mfi) - 1))
+idx <- 1
+
+
+# Initialize empty data frames to fill with new values
+mfi_residuals <- data.frame(matrix(nrow=nrow(mfi),
+                                   ncol=ncol(mfi),
+                                   dimnames=list(rownames(mfi),
+                                                 colnames(mfi))
+                                   )
+                            )
+mfi_residuals[, 1] <- mfi[, 1]
+
+repl_residuals <- data.frame(matrix(nrow=nrow(repl_mfi),
+                                    ncol=(ncol(repl_mfi)-1)))
+repl_residuals[, 1] <- repl_mfi[, 1]
+rownames(repl_residuals) <- rownames(repl_mfi)
+colnames(repl_residuals) <- colnames(repl_mfi)[1:(ncol(repl_mfi)-1)]
+
+double_residuals <- data.frame(matrix(nrow=nrow(double_mfi),
+                                      ncol=ncol(double_mfi),
+                                      dimnames=list(rownames(double_mfi),
+                                                    colnames(double_mfi))))
+
+# Remove rows missing BMI values if adjusting for BMI
+if (linnorm_opts["bmi"] == 1) {
+  mfi_residuals <- mfi_residuals[-which(is.na(sinfo$bmi)), ]
+  sinfo <- sinfo[-which(is.na(sinfo$bmi)), ]
+}
+
+for (ab in colnames(mfi)[-1]) {
+  linreg_input <- data.frame("sample"=rownames(mfi),
+                             "values"=mfi[, ab],
+                             "age"=sinfo[rownames(mfi), "Sampling.age"],
+                             "entry.date"=as.Date(sinfo[rownames(mfi),
+                                                        "entry.date"]),
+                             "bmi"=sinfo[rownames(mfi), "bmi"]
+                             )
+  
+  age_date_lm <- lm(linfun, linreg_input)
+  
+  # Store p-vals
+  age_date_lm_pval[[idx]] <- summary(age_date_lm)$coefficients[, "Pr(>|t|)"]
+  
+  mfi_residuals[, ab] <- age_date_lm$residuals
+  
+  # Get residuals for replicates and doubles by predicting their fitted values
+  repl_predict_input <- data.frame("values"=repl_mfi[, ab],
+                                   "age"=repl_sinfo[rownames(repl_mfi), "Sampling.age"],
+                                   "entry.date"=as.Date(
+                                     repl_sinfo[rownames(repl_mfi), "entry.date"]),
+                                   "bmi"=repl_sinfo[rownames(repl_mfi), "bmi"])
+  rownames(repl_predict_input) <- rownames(repl_mfi)
+  
+  repl_lmfit <- predict(age_date_lm, repl_predict_input)
+  repl_residuals[, ab] <- repl_predict_input$values - repl_lmfit
+  
+  double_predict_input <- data.frame("values"=double_mfi[, ab],
+                                     "age"=double_sinfo[rownames(double_mfi), "Sampling.age"], 
+                                     "entry.date"=as.Date(
+                                       double_sinfo[rownames(double_mfi),"entry.date"]),
+                                     "bmi"=double_sinfo[rownames(double_mfi), "bmi"])
+  rownames(double_predict_input) <- rownames(double_mfi)
+  
+  double_lmfit <- predict(age_date_lm, double_predict_input)
+  double_residuals[, ab] <- double_predict_input$values - double_lmfit
+  
+  # Increment index for list
+  idx <- idx + 1
+}
+
+
+mfi <- mfi_residuals
+
+adpval <- data.frame(matrix(unlist(age_date_lm_pval),
+                            ncol=(length(vars) + 1),
+                            byrow=T))
+colnames(adpval) <- names(age_date_lm_pval[[1]])
+
+# Plot p-value distribution for varibales in linear regression
+for (norm_opt in vars) {
+  print(paste0(norm_opt, ": Number of genes with p-value < 0.05"))
+  print(adpval %>% filter(get(norm_opt) < 0.05) %>% nrow())
+}
+
+
+
+```
+
+Doing UMAP and plotting after normalisation results in the following plots.
+
+```{r UMAP after normalisation, warning=F, eval=T}
+
+umap_after_adj <- plot_umap(
+  umap_casecontrol(mfi_residuals, sinfo), sinfo, T, printall=F)
+
+# merge plots for age, plots for samp date and plots for bmi
+age_adj_plots <- (umap_after_removal$age + labs(title = "Age, not adjusted")) +
+  (umap_after_adj$age + labs(title = "Age, adjusted")) + 
+  plot_layout(guides="collect")
+
+entrydate_adj_plots <- (umap_after_removal$entrydate + labs(title = "Entry date, not adjusted")) +
+  (umap_after_adj$entrydate + labs(title = "Entry date, adjusted")) + 
+  plot_layout(guides="collect")
+
+bmi_adj_plots <- (umap_after_removal$bmi + labs(title = "BMI, not adjusted")) +
+  (umap_after_adj$bmi + labs(title = "BMI, adjusted")) + 
+  plot_layout(guides="collect")
+
+```
+
+
+```{r compare age and bmi and entry date before and after adjustment, eval=T}
+
+(umap_after_removal$age + labs(title = "Not adjusted for age")) + 
+  (umap_after_adj$age + labs(title = "Adjusted for age")) + 
+  plot_layout(guides = "collect")
+
+(umap_after_removal$bmi + labs(title = "Not adjusted for BMI")) + 
+  (umap_after_adj$bmi + labs(title = "Adjusted for BMI")) + 
+  plot_layout(guides = "collect")
+
+(umap_after_removal$entrydate + labs(title = "Not adjusted for entry date")) + 
+  (umap_after_adj$entrydate + labs(title = "Adjusted for entry date")) + 
+  plot_layout(guides = "collect")
+
+```
+
+
+```{r}
+
+# Change linnorm_opts to not include the logreg and clogit options, for later output. The original options are still stored in the all_opts variable 
+linnorm_opts <- linnorm_opts[-which(names(linnorm_opts) %in% c("logreg", "clogit"))]
+
+
+```
+
+
+
+
+

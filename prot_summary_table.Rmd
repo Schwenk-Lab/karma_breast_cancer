@@ -1,0 +1,162 @@
+---
+title: "Protein summary table"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Leo Dahl 
+2020-10-13
+
+
+This is step number `r step_count` in a workflow containing the steps  
+`r step_list`.  
+Main script started on `r starting_time`, this step started on `r Sys.time()`.  
+Output files are generated in  
+`r out_dir2`.
+
+Normalisations that were performed:  
+**`r names(norm_opts[norm_opts == 1])`**
+
+Proteomics data adjusted for:  
+**`r names(which(linnorm_opts == 1))`**
+
+Package used:  
+`r if(use_archetypes){"**archetypes**"}else if(use_archetypal){"**archetypal**"}`
+
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+
+</details>
+
+
+This script will make a table (or a data frame) for the proteins included in the assays.
+
+```{r initialise df}
+
+if (any(binfo$remove_dupl_target == 1)) {
+  prot_df <- binfo[-which(binfo$remove_dupl_target == 1), ]
+} else {
+  prot_df <- binfo
+}
+
+```
+
+
+### Differential expression analysis ###
+
+Results from the DE analysis are added
+
+```{r get DE results}
+
+de_res <- vector("list", n_arch)
+
+for (i in 1:n_arch) {
+  de_res[[i]] <- diff_expr_list[[i]]$all_genes
+}
+
+# Add DE info to protein data frame
+for (i in 1:n_arch) {
+  prot_df[de_res[[i]]$HPA_array_name, 
+          c(paste0("DE_clust", i, "_p"),
+            paste0("DE_clust", i, "_pFDR"),
+            paste0("DE_clust", i, "_deltaMedian"))] <- 
+    de_res[[i]][, c("p_value", "p_adjusted_FDR", "Delta_median")] %>%
+    signif(digits = 3)
+}
+
+```
+
+### Final table ###
+
+```{r make final table}
+
+# Add column to show if a binder was selected from differential expression analysis
+prot_df$DE_selected <- 0
+prot_df[selected_proteins_overlap$HPA_array_name, "DE_selected"] <- 1
+
+# Add antibodies that were removed due to being present more than once
+prot_df <- plyr::rbind.fill(prot_df, 
+														binfo_w_dupl %>% filter(remove_dupl_target == 1))
+
+# Add antibodies that were in assay 2 (duplicate) and antibodies that failed QC
+prot_df <- plyr::rbind.fill(prot_df,
+														binfo_all %>% filter((abqc_fail == 1 | alt.assay.name == "A2") & Gene.name != ""))
+
+# Add antibodies that have no information about its target
+prot_df <- plyr::rbind.fill(prot_df,
+														binfo1_w_cetfail %>% filter(cet.fail == 0 & Gene.name == ""))
+
+# Give the arrays nicer names 
+prot_df$SBA_name <- apply(prot_df, 1, function(x) {
+	switch(x["alt.assay.name"],
+				 "A1"="SBA1", 
+				 "A2"="SBA1 (replicate)",
+				 "A3"="SBA2", 
+				 "A4"="SBA3")
+})
+
+rownames(prot_df) <- prot_df$alt.ab.name
+
+# Add CV and IQR
+prot_df$technical_CV <- cvdf[rownames(prot_df), "t.CV"]
+prot_df$IQR <- iqrdf[rownames(prot_df), "ab_iqr"]
+
+# Add clogit results
+if (all_opts$linnorm_opts["clogit"] != 1) {
+  load(paste0(out_dir, "../results_logreg_and_lmm/2021-04-30_clogit.Rdata"))
+}
+
+prot_df[rownames(clog_res), paste0(c("clogit_p_model", "clogit_estimate_model", "clogit_FDR_model"), rep(1:3, each=3))] <- clog_res[, paste0(c("p_value_model", "effect_size_model", "fdr_model"), rep(1:3, each=3))]
+
+# Keep columns c("Gene_name", "Gene_description", "Binder_name", "SBA_name", "DE_selected", "DE_clust1_p", "DE_clust1_pFDR", "DE_clust1_deltaMedian", "clogit_p_model1", "clogit_estimate_model1", "clogit_FDR_model1", "clogit_p_model2", "clogit_estimate_model2", "clogit_FDR_model2", "clogit_p_model3", "clogit_estimate_model3", "clogit_FDR_model3", "abqc_fail", "remove_dupl_target")
+colnames(prot_df) <- gsub("\\.", "_", colnames(prot_df))
+
+# Print table 
+datatable(prot_df[, c("Gene_name", "Gene_description", "Binder_name", "SBA_name", "DE_selected", "DE_clust1_p", "DE_clust1_pFDR", "DE_clust1_deltaMedian", "clogit_p_model1", "clogit_estimate_model1", "clogit_FDR_model1", "clogit_p_model2", "clogit_estimate_model2", "clogit_FDR_model2", "clogit_p_model3", "clogit_estimate_model3", "clogit_FDR_model3", "abqc_fail", "remove_dupl_target")], rownames=F)
+
+# Save table
+prot_df_xlsx <- createWorkbook()
+addWorksheet(prot_df_xlsx, "Protein_summary")
+writeDataTable(prot_df_xlsx, "Protein_summary",
+               prot_df %>%
+                 filter(cet_fail == 0 &
+                        abqc_fail == 0 &
+                        SBA_name != "SBA1 (replicate)") %>%
+                 select(c("Gene_name", "Gene_description", "Binder_name", "SBA_name", "technical_CV", "IQR", "DE_selected", "DE_clust1_p", "DE_clust1_pFDR", "DE_clust1_deltaMedian", "clogit_p_model1", "clogit_estimate_model1", "clogit_FDR_model1", "clogit_p_model2", "clogit_estimate_model2", "clogit_FDR_model2", "clogit_p_model3", "clogit_estimate_model3", "clogit_FDR_model3", "abqc_fail", "remove_dupl_target")))
+saveWorkbook(prot_df_xlsx,
+             file = paste0(out_dir, "../results_prot_summary_table/",
+                           Sys.Date(), "_prot_summary_table.xlsx"))
+
+
+```
+
+
+

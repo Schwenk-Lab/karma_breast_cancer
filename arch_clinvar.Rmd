@@ -1,0 +1,148 @@
+---
+title: "Archetype cluster clinical variables"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if (steps["archetypal_analysis"] == 0) {
+  # If analysis was skipped, load saved results from previous run
+	load("/home/.../archetypal_results.Rdata")
+  
+  # Output directory
+	out_dir2 <- "/home/.../results/"
+	if(arch_opts["package"] == 2) {
+		use_archetypal <- T
+		use_archetypes <- F
+	} else {
+		use_archetypal <- F
+		use_archetypes <- T
+	}
+	
+	do_adj <- ifelse(adj_dens == 1, T, F)
+	arch_colour <- "Paired"
+
+}	
+
+```
+
+
+Leo Dahl  
+2020-04-07
+
+This is step number `r step_count` in a workflow containing the steps  
+`r step_list`.  
+Main script started on `r starting_time`, this step started on `r Sys.time()`.  
+Output files are generated in  
+`r out_dir2`.
+
+Normalisations that were performed:  
+**`r names(norm_opts[norm_opts == 1])`**
+
+Proteomics data adjusted for:  
+**`r names(which(linnorm_opts == 1))`**
+
+Package used:  
+`r if(use_archetypes){"**archetypes**"}else if(use_archetypal){"**archetypal**"}`
+
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+
+</details>
+
+
+## Clinical parameters
+
+Several clinical parameters are investigated to see whether they drive the archetypes somehow.
+
+Continuous variables are tested using the Wilcoxon rank sum test pairwise between clusters. The data is plotted in density plots and boxplots. 
+
+Discrete variables are tested using the Fisher's exact test pairwise between clusters and plotted in bar charts (counts and proportions). 
+
+#### Age
+
+```{r Age, warning=F}
+
+plot_results(arch_df, groupby="cluster", clin_var="age")
+
+```
+
+
+#### BMI
+
+```{r BMI, warning=F}
+
+bmiplot <- plot_results(arch_df, "cluster", "bmi", printplots=F)
+bmiplot$boxplot + labs(y = "BMI")
+
+```
+
+
+#### Mammographic breast density
+
+```{r Mammographic breast densities, warning=F}
+
+adplot <- plot_results(arch_df, "cluster", "area.density", printplots=F)
+adplot$boxplot + labs(y = "Dense area (cm2)")
+
+# BMI-adjusted densities
+if (do_adj) { 
+  adadjplot <- plot_results(arch_df, "cluster", "area.dens.adj", printplots=F)
+  adadjplot$boxplot + labs(y = "BMI-adjusted dense area (cm2)")
+}
+
+```
+
+
+#### Case Control status
+
+```{r Case control status, warning=F}
+
+plot_results(arch_df, "cluster", "class")
+
+```
+
+#### PRS 
+
+Polygenic risk scores (PRS)  
+
+```{r PRS plot}
+
+# PRS plot with cluster 1 vs group consisting of the other clusters
+prs_clust1 <- arch_df %>%
+  select(cluster, PRS) %>%
+  mutate(cluster = replace(cluster, cluster != 1, "Other")) %>%
+  filter(!is.na(PRS))
+
+plot_results(prs_clust1, "cluster", "PRS")
+
+```
+
+***
+

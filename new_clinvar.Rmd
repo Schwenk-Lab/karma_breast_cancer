@@ -1,0 +1,345 @@
+---
+title: "KARMA New data plots"
+author: "Leo Dahl"
+date: "2020-10-28"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<style type="text/css">
+
+h1 { 
+  font-size: 25px;
+  margin-top: 1.5cm;
+  margin-bottom: 0.5cm;
+}
+h2 { 
+  font-size: 18px;
+  margin-top: 1cm;
+  margin-bottom: 0.5cm;
+}
+
+</style>
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+
+</details>
+
+
+KARMA New data plots 
+====================
+
+New data received on Tue 20 Oct 2020 is plotted here. This data includes HRT and statin data from the prescription register (goes back to 2005) as well as newer tumour characteristics data. This script may be run without performing the archetypal analysis by loading the results data from the previous run instead 
+
+```{r load data if necessary}
+
+if (steps["archetypal_analysis"] == 0) {
+  # Load results from a previous run if the archetypal analysis step was skipped
+	load("/home/.../results/archetypal_results.Rdata")
+}
+
+```
+
+```{r put new data into archetype cluster data frame}
+
+rownames(arch_df) <- arch_df$study.id
+
+# Could use match(), but simpler to just use intersect since have a few that don't match?
+arch_tinfo_overlap <- intersect(arch_df$study.id, new_tumour_info$studieid)
+arch_df[arch_tinfo_overlap, c("er_newest", "pr_newest", "her2_newest", "invasiveness_newest", "size_newest", "nottingham_newest", "multiple_tumours", "tumour_number", "nottingham_t", "nottingham_n", "nottingham_m", "vessel_growth", "prolif_marker", "prolif_value")] <- new_tumour_info[arch_tinfo_overlap, -1]
+
+arch_hrtstatin_overlap <- intersect(arch_df$study.id, hrt_statin_info$studyid)
+arch_df[arch_hrtstatin_overlap, c("hrt_ever_new", "hrt_status", "p_new", "e_new", "pe_new", "hrt_mix_new", "hrt_first_start_new", "hrt_last_end_new", "hrt_usage_period_new", "hrt_end_noentrydate", "statin_ever", "statin_status", "statin_01", "statin_03", "statin_04", "statin_05", "statin_07", "statin_mix", "statin_first_start", "statin_last_end", "statin_usage_period", "statin_end_noentrydate")] <- hrt_statin_info[arch_hrtstatin_overlap, -1]
+
+# Make discrete scoring for size like before (20mm cutoff)
+arch_df$size_new_discrete <- ifelse(as.numeric(arch_df$size_newest) < 20, "< 20mm", ">= 20mm")
+
+# Set tumour characteristics to NA for controls
+arch_df[which(arch_df$class == "Control"), c("er_newest", "pr_newest", "her2_newest", "invasiveness_newest", "size_newest", "nottingham_newest", "multiple_tumours", "tumour_number", "nottingham_t", "nottingham_n", "nottingham_m", "vessel_growth", "prolif_marker", "prolif_value")] <- NA
+
+# Get difference in days between entry date and treatment start/end dates
+arch_df$hrt_start_entrydiff <- 
+	as.numeric(as.Date(arch_df$entry.date) - as.Date(arch_df$hrt_first_start_new))
+arch_df$hrt_end_entrydiff <- 
+	as.numeric(as.Date(arch_df$entry.date) - as.Date(arch_df$hrt_last_end_new))
+arch_df$statin_start_entrydiff <- 
+	as.numeric(as.Date(arch_df$entry.date) - as.Date(arch_df$statin_first_start))
+arch_df$statin_end_entrydiff <- 
+	as.numeric(as.Date(arch_df$entry.date) - as.Date(arch_df$statin_last_end))
+arch_df$hrt_end_entrydiff_noentrydate <- 
+	as.numeric(as.Date(arch_df$entry.date) - as.Date(arch_df$hrt_end_noentrydate))
+arch_df$statin_end_entrydiff_noentrydate <-
+	as.numeric(as.Date(arch_df$entry.date) - as.Date(arch_df$statin_end_noentrydate))
+
+# Convert starting dates and ending dates to years
+arch_df$hrt_first_start_new <- as.numeric(format(as.Date(arch_df$hrt_first_start_new), "%Y"))
+arch_df$hrt_last_end_new <- as.numeric(format(as.Date(arch_df$hrt_last_end_new), "%Y"))
+arch_df$statin_first_start <- as.numeric(format(as.Date(arch_df$statin_first_start), "%Y"))
+arch_df$statin_last_end <- as.numeric(format(as.Date(arch_df$statin_last_end), "%Y"))
+arch_df$hrt_end_noentrydate <- as.numeric(format(as.Date(arch_df$hrt_end_noentrydate), "%Y"))
+arch_df$statin_end_noentrydate <- as.numeric(format(as.Date(arch_df$statin_end_noentrydate), "%Y"))
+
+# New statin categories, lipophilic or hydrophilic
+arch_df$statin_philicity <- apply(arch_df, 1, function(x) {
+	if (all(is.na(x[str_detect(names(x), "statin_\\d\\d")]))) {
+		return(NA)
+	}
+	
+	lipophil <- 1 %in% x[c("statin_01", "statin_04", "statin_05")]
+	hydrophil <- 1 %in% x[c("statin_03", "statin_07")]
+	
+	if (lipophil & hydrophil) {
+		return("Both")
+		
+	} else if (lipophil & !hydrophil) {
+		return("Lipophilic")
+		
+	} else if (!lipophil & hydrophil) {
+		return("Hydrophilic")
+	
+	} else {
+		return("None")
+		
+	} 
+	
+})
+
+```
+
+```{r merge old and new}
+
+# Merge some old and new variables, but only if new data is NA where old data is not
+merge_clindat <- apply(arch_df, 1, function(x) {
+	# ER, recode "Positive" and "Negative" to 1 and 0
+	er_merge <- ifelse(is.na(x["er_newest"]) & !is.na(x["er.new"]), 
+										 ifelse(x["er.new"] == "Positive", 1, 0), 
+										 x["er_newest"])
+	
+	
+	# PR
+	pr_merge <- ifelse(is.na(x["pr_newest"]) & !is.na(x["pr"]),
+										 ifelse(x["pr"] == "Positive", 1, 0), 
+										 x["pr_newest"]) 
+	
+	# HER2
+	her2_merge <- ifelse(is.na(x["her2_newest"]) & !is.na(x["her2"]),
+													x["her2"], x["her2_newest"])
+	
+	# Invasiveness, old had 1 as invasive and 2 as in situ
+	inv_merge <- ifelse(is.na(x["invasiveness_newest"]) & !is.na(x["A090Inv"]),
+											ifelse(x["A090Inv"] == 1, 1, 0), 
+											x["invasiveness_newest"])
+	
+	# Tumour size (discrete)
+	tsize_merge <- ifelse(is.na(x["size_new_discrete"]) & !is.na(x["t.new"]),
+												ifelse(x["t.new"] == 1, "< 20mm", ">= 20mm"), 
+												x["size_new_discrete"])
+	
+	# Nottingham grade
+	nott_merge <- ifelse(is.na(x["nottingham_newest"]) & !is.na(x["NHGclass"]),
+											 x["NHGclass"], x["nottingham_newest"])
+	
+	# HRT ever
+	hrt_ever_merge <- ifelse(is.na(x["hrt_ever_new"]) & !is.na(x["hrt.ever"]), 
+													 x["hrt.ever"], x["hrt_ever_new"]) 
+	
+	# HRT status
+	hrt_status_merge <- ifelse(is.na(x["hrt_status"]) & !is.na("hrt.status"),
+														 x["hrt.status"], x["hrt_status"])
+	
+	# Do HRT ever and status again, but this time if new data has 0, use old data (unless NA)
+	# This because the old data is probably reliable since you would remember if you have ever taken HRT, or if you are taking HRT when taking the survey. The new data only goes back to 2005 and is only relibale from that time
+	
+	hrt_ever_merge2 <- ifelse((is.na(x["hrt_ever_new"]) & !is.na(x["hrt.ever"])) | (x["hrt_ever_new"] == 0 & !is.na(x["hrt.ever"])),
+           x["hrt.ever"], x["hrt_ever_new"])
+	
+	hrt_status_merge2 <- ifelse((is.na(x["hrt_status"]) & !is.na(x["hrt.status"])) | (x["hrt_status"] == 0 & !is.na(x["hrt.status"])),
+           x["hrt.status"], x["hrt_status"])
+	
+	# Merge HRT types
+	hrt_e_merge <- ifelse((is.na(x["e_new"]) & !is.na(x["hrt_e_old"])) |
+													(x["e_new"] == 0 & !is.na(x["hrt_e_old"])), 
+												x["hrt_e_old"], x["e_new"])
+	
+	hrt_p_merge <- ifelse((is.na(x["p_new"]) & !is.na(x["hrt_p_old"])) |
+													(x["p_new"] == 0 & !is.na(x["hrt_p_old"])),
+												x["hrt_p_old"], x["p_new"])
+	
+	hrt_pe_merge <- ifelse((is.na(x["pe_new"]) & !is.na(x["hrt_pe_old"])) |
+												 	(x["pe_new"] == 0 & !is.na(x["hrt_pe_old"])),
+												 x["hrt_pe_old"], x["pe_new"])
+	
+	hrt_mix_merge <- ifelse((is.na(x["hrt_mix_new"]) & !is.na(x["hrt_mix_old"])) |
+														(x["hrt_mix_new"] == 0 & !is.na(x["hrt_mix_old"])),
+													x["hrt_mix_old"], x["hrt_mix_new"])
+	
+	# Merge HRT start year and end year
+	# If missing in prescription register, use old
+	# If in prescription registry but not in old data, use new
+	# If in both, check which is earliest (start) or latest (end)
+	# If both missing, use NA
+	hrt_start_newNA <- is.na(x["hrt_first_start_new"])
+	hrt_start_oldNA <- is.na(x["hrt.start"])
+	if (hrt_start_newNA & !hrt_start_oldNA) {
+		hrt_start_merge <- x["hrt.start"]
+	
+	} else if (!hrt_start_newNA & hrt_start_oldNA) {
+		hrt_start_merge <- x["hrt_first_start_new"]
+		
+	} else if (!hrt_start_newNA & !hrt_start_oldNA) {
+		hrt_start_merge <- min(as.numeric(x["hrt_first_start_new"]),
+													 as.numeric(x["hrt.start"]))
+		
+	} else {
+		hrt_start_merge <- NA
+	}
+	
+	hrt_stop_newNA <- is.na(x["hrt_end_noentrydate"])
+	hrt_stop_oldNA <- is.na(x["hrt.stop"])
+	if (hrt_stop_newNA & !hrt_stop_oldNA) {
+		hrt_stop_merge <- x["hrt.stop"]
+	
+	} else if (!hrt_stop_newNA & hrt_stop_oldNA) {
+		hrt_stop_merge <- x["hrt_end_noentrydate"]
+		
+	} else if (!hrt_stop_newNA & !hrt_stop_oldNA) {
+		hrt_stop_merge <- max(as.numeric(x["hrt_end_noentrydate"]),
+													as.numeric(x["hrt.stop"]))
+		
+	} else {
+		hrt_stop_merge <- NA
+	}
+	
+	names(er_merge) = names(pr_merge) = names(her2_merge) = names(inv_merge) = names(tsize_merge) = names(nott_merge) = names(hrt_ever_merge) = names(hrt_status_merge) = names(hrt_ever_merge2) = names(hrt_status_merge2) = names(hrt_p_merge) = names(hrt_e_merge) = names(hrt_pe_merge) = names(hrt_mix_merge) = names(hrt_start_merge) = names(hrt_stop_merge) <- NULL
+	
+	return(c("er"=er_merge, "pr"=pr_merge, "her2"=her2_merge, "inv"=inv_merge, 
+					 "tsize"=tsize_merge, "nott_grade"=nott_merge, 
+					 "hrtever_merge"=hrt_ever_merge, "hrtstatus_merge"=hrt_status_merge,
+					 "hrtever_merge2"=hrt_ever_merge2, "hrtstatus_merge2"=hrt_status_merge2,
+					 "hrtp_merge"=hrt_p_merge, "hrte_merge"=hrt_e_merge, "hrtpe_merge"=hrt_pe_merge,
+					 "hrtmix_merge"=hrt_mix_merge, "hrtstart_merge"=hrt_start_merge, 
+					 "hrtstop_merge"=hrt_stop_merge))
+}) %>% 
+	t() %>%
+	as.data.frame()
+
+arch_df[, c("er_merge", "pr_merge", "her2_merge", "inv_merge", "tsize_merge", "NHG_merge", "hrt_ever_merge", "hrt_status_merge", "hrt_ever_merge2", "hrt_status_merge2", "hrt_p_merge", "hrt_e_merge", "hrt_pe_merge", "hrt_mix_merge", "hrt_start_merge", "hrt_stop_merge")] <- merge_clindat
+
+```
+
+Statin related plots
+====================
+
+Statin usage
+```{r statin ever}
+
+statin_ever_plot <- plot_results(arch_df, "cluster", "statin_ever", printplots=F)
+nice_barplot(statin_ever_plot, "Used statin \never", c("No", "Yes", "Missing"))
+
+statin_status_plot <- plot_results(arch_df, "cluster", "statin_status", printplots=F)
+nice_barplot(statin_status_plot, "Statin status \nat entry", c("Never taken", "Taken before", "Taking", "Missing"))
+
+```
+
+Statin types
+```{r statin types}
+
+nice_barplot(plot_results(arch_df, "cluster", "statin_philicity", printplots=F),
+						 "Statin philicity", c("Both", "Hydrophilic", "Lipophilic", "None", "Missing"))
+
+nice_barplot(plot_results(arch_df %>% filter(statin_philicity != "None"),
+													"cluster", "statin_philicity", printplots=F), 
+						 "Statin philicity", c("Both", "Hydrophilic", "Lipophilic"))
+
+```
+
+Merged data
+===========
+
+Variables that were merged with old data are plotted below.
+
+HRT ever and status
+-------------------
+
+Merged by taking registry data if it exists (unless registry says 0, since it only goes back to 2005) and questionnaire data otherwise.
+
+```{r hrt merge 2}
+
+hrtevermerge2_plot <- plot_results(arch_df, "cluster", "hrt_ever_merge2", printplots=F)
+hrtstatusmerge2_plot <- plot_results(arch_df, "cluster", "hrt_status_merge2", printplots=F)
+
+nice_barplot(hrtevermerge2_plot, "HRT taken ever", c("No", "Yes", "Missing"))
+nice_barplot(hrtstatusmerge2_plot, "HRT status \nat entry", c("Never taken", "Taken before", "Taking", "Missing"))
+
+# Try HRT status without the "taking" category
+hrtstatusmerge2notaking_plot <- plot_results(arch_df %>% filter(hrt_status_merge2 != 2), "cluster", "hrt_status_merge2", printplots=F)
+nice_barplot(hrtstatusmerge2notaking_plot, "HRT status \nat entry\n(excl. 'Taking')", c("Never taken", "Taken before"))
+
+```
+
+
+```{r}
+
+# Make a difference between entry date and HRT start variable for the old data
+arch_df$oldhrt_startentrydiff <- apply(arch_df, 1, function(x) {
+    entrydate <- as.numeric(as.Date(x["entry.date"]) %>% format("%Y")) 
+    startyear <- as.numeric(x["hrt.start"])
+    entrydate - startyear
+})
+
+
+# Merge old and new start and end entrydiff variables
+arch_df[, c("hrt_startentrydiff_merge", "hrt_endentrydiff_merge")] <- 
+	apply(arch_df, 1, function(x) {
+		endentrydiff <- ifelse(is.na(x["hrt_end_entrydiff"]) & 
+															!is.na(x["entrydate.hrtstop.diff"]),
+														x["entrydate.hrtstop.diff"],
+														as.numeric(x["hrt_end_entrydiff"])/365)
+		startentrydiff <- ifelse(is.na(x["hrt_start_entrydiff"]) & 
+														!is.na(x["oldhrt_startentrydiff"]), 
+													x["oldhrt_startentrydiff"],
+													as.numeric(x["hrt_start_entrydiff"])/365)
+		
+		return(c(as.numeric(startentrydiff), as.numeric(endentrydiff)))
+}) %>% t()
+
+plot_results(arch_df, "cluster", "hrt_endentrydiff_merge", printplots=F)$boxplot + labs(y = "Years between entry and HRT end")
+
+```
+
+
+```{r}
+# Remove empty rows that may have been introduced when adding data
+if (length(which(is.na(arch_df$sample))) > 0) {
+  arch_df <- arch_df[-which(is.na(arch_df$sample)), ]
+}
+```
+

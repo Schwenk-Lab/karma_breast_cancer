@@ -1,0 +1,752 @@
+---
+title: "Archetypal Analysis"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+params: 
+  step_vec: 0
+  step_nr: 0
+  start_time: 0
+  step_arch: 0
+  norms: 0
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Sporadic change of how the introduction is written, but this is better suited as an input parameter to the script instead
+# Output directory
+out_dir2 <- "/home/.../results/"
+
+# Output directory for scree plot, 
+scree_dir <- "/home/.../results_archetypal_analysis"
+```
+
+Leo Dahl  
+2020-02-28
+
+This is step number `r params$step_nr` in a workflow containing the steps  
+`r params$step_vec`.  
+Main script started on `r params$start_time`, this step started on `r Sys.time()`.  
+Output files are generated in  
+`r out_dir2`.
+
+Normalisations that were performed:  
+**`r names(params$norms[params$norms == 1])`**
+
+Proteomics data adjusted for:  
+**`r names(which(linnorm_opts == 1))`**
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+
+</details>
+
+
+```{r process options}
+
+# Adjust densities for bmi? 
+if (adj_dens == 1) {
+  do_adj <- T
+} else {
+  do_adj <- F
+}
+
+
+```
+
+`r if(do_adj){"Densities will be adjusted for BMI and age."}`
+
+# Archetypal analysis
+
+```{r archetypal analysis without making scree plot, eval=no_scree}
+
+# Set seed for consistency
+set.seed(123)
+
+# Archetypal analysis
+step_arch <- stepArchetypes(data=mfi[, -1], k=n_arch, nrep=3, verbose=F)
+
+# Pick out the best model
+arch <- bestModel(step_arch)
+
+```
+
+
+```{r Model and cluster memberships, results="hide", eval=make_scree}
+
+# If AA was performed repeatedly with different numbers of archetypes to make a scree plot in analysis_prep.Rmd
+# Number of archetypes based on screeplot
+n_arch <- menu(k_totest)
+
+
+# Making some things to keep to look at after
+# Vector of RSS used for screeplot
+min_rss <- apply(
+  rss(step_arch), 1, function(row) {
+    min(row, na.rm=T)
+  }
+)
+
+
+#  Set seed for consistency
+set.seed(123)
+
+#  archetypal analysis
+step_arch <- stepArchetypes(data=mfi[, -1], k=n_arch, nrep=3, verbose=F)  #, method=robustArchetypes) 
+
+# Pick out the best model for that number of archetypes
+arch <- bestModel(step_arch)
+
+```
+
+
+```{r archetypal package, eval=use_archetypal}
+
+# Method to use for estimating the initial solution
+init_method <- "random"
+
+set.seed(123)
+
+# Find optimal number of archetypes if option chosen
+maxkappa <- 20
+if (find_opt_k) {
+  k_opt <- find_optimal_kappas(df=mfi[, -1], 
+                               maxkappas=maxkappa,
+                               method=init_method, 
+                               rseed=123, 
+                               verbose=F)
+  n_arch <- k_opt$optimal_kappas
+  
+  # Make a screeplot of the SSEs
+  plot(1:maxkappa, k_opt$bestfit_sse1$sse, type="o", 
+       xlab="Number of archetypes", ylab="SSE")
+}
+
+# Archetypal analysis
+set.seed(123)
+arch <- archetypal(df=mfi[, -1], kappas=n_arch, method=init_method, rseed=123, verbose=F)
+
+```
+
+If using the archetypes package, a plot showing the RSS (residual sum of squares, the difference between the input values and the predictions/approximations that can be constructed with the archetypes, which is what AA tries to minimize) versus the number of archetypes for normal and archetypal analysis can be found in `r scree_dir`.
+`r if(make_scree & use_archetypes){"For this run, a new scree plot was generated."}` 
+`r if(no_scree & use_archetypes){"For this run, no new scree plot was made."}`
+
+`r if(use_archetypes){"Archetypal analysis is performed using the **archetypes** package."}`
+`r if(use_archetypal){"Archetypal analysis is performed using the **archetypal** package."}`  
+The number of archetypes is **`r n_arch`**. 
+
+```{r cluster memberships}
+
+# cluster memberships (points assigned to archetype they have the highest probability of belonging to) of each sample, as well as the coordinates of the archetypes
+
+if(use_archetypes) {
+  clust_mem <- max.col(arch$alphas) 
+  arch_coord <- arch$archetypes
+} else if (use_archetypal) {
+  clust_mem <- max.col(arch$A)
+  arch_coord <- arch$BY
+}
+
+# Reorder clusters to be in ascending order, for aesthetic reasons
+new_order <- order(table(clust_mem))
+clust_membership <- vector("character", length(clust_mem))
+for (i in 1:n_arch) {
+  clust_membership[clust_mem == new_order[i]] <- i
+}
+
+arch_coordinates <- arch_coord[new_order, ]
+
+# Update archetypes in original object for later prediction of double alphas
+if (use_archetypal) {
+  arch$BY <- arch_coordinates
+} else if (use_archetypes) {
+  arch$archetypes <- arch_coordinates
+}
+
+```
+
+## Plotting results
+
+### The archetypes and clusters
+
+```{r pca with archetypes included for plotting and main archetypes data frame}
+
+arch_pca <- prcomp(rbind(mfi[, -1], arch_coordinates),
+                   center=T, scale.=T)
+rownames(arch_pca$x) <- c(rownames(mfi), paste0("Archetype", 1:n_arch))
+
+# Main data frame with info about samples, their cluster membership, and several clinical parameters
+arch_df <- data.frame("sample"=rownames(mfi),
+                      "study.id"=sinfo[rownames(mfi), "Tube.label"],
+                      "cluster"=as.character(clust_membership),
+                      "percent.density"=sinfo[rownames(mfi), "percent.dens"],
+                      "area.density"=sinfo[rownames(mfi), "area.dens"],
+                      "age"=sinfo[rownames(mfi), "Sampling.age"],
+                      "bmi"=sinfo[rownames(mfi), "bmi"],
+                      "class"=sinfo[rownames(mfi), "Class"],
+                      "samp.date"=as.Date(sinfo[rownames(mfi), "Sampling.date"]),
+                      "entry.date"=as.Date(sinfo[rownames(mfi), "entry.date"]),
+											"diag.date1"=as.Date(sinfo[rownames(mfi), "diag.date"]),
+											"diag.date2"=as.Date(sinfo[rownames(mfi), "diag.date2"]),
+                      "diag.samp.diff"=as.numeric(
+                        sinfo[rownames(mfi), "diag.date"] -
+                          as.Date(sinfo[rownames(mfi), "Sampling.date"])),
+                      "diag.entry.diff"=as.numeric(
+                        sinfo[rownames(mfi), "diag.date"] -
+                          as.Date(sinfo[rownames(mfi), "entry.date"])),
+                      "samp.entry.diff"=as.numeric(
+                        as.Date(sinfo[rownames(mfi), "Sampling.date"]) - 
+                          as.Date(sinfo[rownames(mfi), "entry.date"])),
+											"prevalent"=sinfo[rownames(mfi), "prevalent"], 
+											"incident"=sinfo[rownames(mfi), "incident"],
+											"prevalent_entry"=sinfo[rownames(mfi), "prevalent_entry"],
+											"incident_entry"=sinfo[rownames(mfi), "incident_entry"], 
+											"othercancer"=as.character(sinfo[rownames(mfi), "other_cancer"]), 
+											"othercancer_prevalent"=sinfo[rownames(mfi), "other_cancer_prevalent"],
+                      "er"=sinfo[rownames(mfi), "er.status"],
+                      "her2"=sinfo[rownames(mfi), "her2.status"],
+                      "postmenop"=sinfo[rownames(mfi), "postmenop"],
+                      "menop.status"=sinfo[rownames(mfi), "menop_status"],
+                      "diagnosis.mode"=sinfo[rownames(mfi), "diagnosis_mode"], 
+                      "hrt.ever"=sinfo[rownames(mfi), "hrt.ever"],
+                      "hrt.status"=sinfo[rownames(mfi), "hrt.status"],
+                      "hrt.duration.age"=sinfo[rownames(mfi), "hrt_dur_age"], 
+                      "hrt.duration.years"=sinfo[rownames(mfi), "hrt_dur_years"],
+                      "hrt.drug.duration.sum"=sinfo[rownames(mfi), "hrt_dur_sum"],
+                      "hrt.hpe"=as.character(sinfo[rownames(mfi), "hrt_hpe"]),
+                      "hrt.mpe"=as.character(sinfo[rownames(mfi), "hrt_mpe"]),
+                      "hrt.mpep"=as.character(sinfo[rownames(mfi), "hrt_mpep"]),
+                      "hrt.mpeps"=as.character(sinfo[rownames(mfi), "hrt_mpeps"]),
+                      "hrt.p"=as.character(sinfo[rownames(mfi), "hrt_p"]),
+                      "hrt.lpe"=as.character(sinfo[rownames(mfi), "hrt_lpe"]),
+                      "hrt.merge"=as.character(sinfo[rownames(mfi), "hrt_merge"]),
+											# New categorisation of HRT
+											"hrt_e_old"=as.character(sinfo[rownames(mfi), "hrt_e_old"]),
+											"hrt_p_old"=as.character(sinfo[rownames(mfi), "hrt_p_old"]),
+											"hrt_pe_old"=as.character(sinfo[rownames(mfi), "hrt_pe_old"]),
+											"hrt_mix_old"=as.character(sinfo[rownames(mfi), "hrt_mix_old"]), 
+                      "hrt.start"=sinfo[rownames(mfi), "hrt_start"],
+                      "hrt.stop"=sinfo[rownames(mfi), "hrt_stop"],
+                      "sampdate.hrtstop.diff"=as.numeric(sinfo[rownames(mfi), "samp_hrtstop_diff"]),
+											"entrydate.hrtstart.diff"=as.numeric(sinfo[rownames(mfi), "entry_hrtstart_diff"]),
+											"entrydate.hrtstop.diff"=as.numeric(sinfo[rownames(mfi), "entry_hrtstop_diff"]), 
+                      "t.old"=sinfo[rownames(mfi), "t.recode"], 
+                      "n.old"=sinfo[rownames(mfi), "n.recode"],
+                      "t.new"=sinfo[rownames(mfi), "A040T.recode"],
+                      "n.new"=sinfo[rownames(mfi), "A040N.recode"],
+                      "A090Inv"=sinfo[rownames(mfi), "A090Inv.recode"],
+                      "er.new"=sinfo[rownames(mfi), "A100ER.recode"],
+                      "pr"=sinfo[rownames(mfi), "A100PR.recode"],
+                      "NHGclass"=sinfo[rownames(mfi), "A100NHG"],
+                      "PRS"=sinfo[rownames(mfi), "prs"],
+											"smoke_pack_year"=sinfo[rownames(mfi), "smoke_pack_year"],
+											"alcohol_g_week"=sinfo[rownames(mfi), "alcohol_g_week"],
+											"birth_nums"=sinfo[rownames(mfi), "num_births"],
+											"parity"=sinfo[rownames(mfi), "parity"],
+											"contraception_ever"=sinfo[rownames(mfi), "contraception_ever"],
+											"menarche_age"=sinfo[rownames(mfi), "menarche_age"],
+											"menopause_age"=sinfo[rownames(mfi), "menopause_age"],
+                      "PC1"=arch_pca$x[rownames(mfi), 1],
+                      "PC2"=arch_pca$x[rownames(mfi), 2],
+                      "PC3"=arch_pca$x[rownames(mfi), 3])
+
+if (use_archetypes) {
+  arch_df$weights <- arch$reweights
+}
+
+# Tumour characteristics set to NA for controls
+arch_df[which(arch_df$class == "Control" | arch_df$class == "Other"), c("er", "her2", "diagnosis.mode", "t.old", "n.old", "t.new", "n.new", "A090Inv", "er.new", "pr", "NHGclass")] <- NA
+
+# Change name of Doubels from "Other" to "Double"
+arch_df[arch_df$class == "Other", "class"] <- "Double"
+# Doubles changed to control as they all were cancer-free at the time of matching
+arch_df$class_wdouble <- arch_df$class
+arch_df$class <- ifelse(arch_df$class == "Double", "Control", arch_df$class)
+
+# The archetypes themselves projected down with PCA
+dimred_archetypes <- data.frame("PC1"=arch_pca$x[paste0("Archetype", 1:n_arch), 1],
+                                "PC2"=arch_pca$x[paste0("Archetype", 1:n_arch), 2],
+                                "PC3"=arch_pca$x[paste0("Archetype", 1:n_arch), 3])
+
+
+```
+
+Looking at the highest archetype coefficient for each point in each cluster could give an idea of how "reliable" or "strong" the cluster is? Higher values means that the points belong more strongly to that archetype. 
+
+```{r alpha distributions}
+
+if (use_archetypal) {
+	
+	arch_maxalphas <- data.frame("alpha_max"=apply(arch$A, 1, function(x) max(x)),
+															 "cluster"=arch_df$cluster)
+	
+} else if (use_archetypes) {
+	
+	arch_maxalphas <- data.frame("alpha_max"=apply(arch$alphas, 1, function(x) max(x)),
+															 "cluster"=arch_df$cluster)
+	
+}
+
+plot_results(arch_maxalphas, "cluster", "alpha_max")
+
+```
+
+
+
+```{r adjusting densities, eval=do_adj}
+
+to_adjust <- c("percent.dens", "area.dens")
+
+# Adjust densities for BMI using linear model
+for (param in to_adjust) {
+  
+  sinfo[, paste0(param, ".adj")] = arch_df[, paste0(param, ".adj")] <- NA
+  linfun <- as.formula(paste0(param, " ~ bmi + Sampling.age"))
+  bmi_lm <- lm(linfun, sinfo)
+  lm_resid <- bmi_lm$residuals
+  lm_resid <- lm_resid + median(sinfo[is.na(sinfo[, param]) == F, param])
+  sinfo[is.na(sinfo[, param]) == F & is.na(sinfo$bmi) == F, paste0(param, ".adj")] <- lm_resid
+  arch_df[rownames(sinfo), paste0(param, ".adj")] <- sinfo[, paste0(param, ".adj")]
+  
+}
+
+```
+
+
+#### Archetype cluster summary
+
+```{r arch table}
+
+arch_tbl_df <- arch_df
+
+# Change labels to get correct names in rows of table
+arch_tbl_df$postmenop <- factor(arch_tbl_df$postmenop, 
+                                levels=c(0, 1), 
+                                labels=c("Premenopausal", "Postmenopausal"))
+
+arch_tbl_df$diagnosis.mode <- factor(arch_tbl_df$diagnosis.mode, 
+                                     levels=c(0, 1),
+                                     labels=c("Clinical", "Screening"))
+
+arch_tbl_df$hrt.ever <- factor(arch_tbl_df$hrt.ever,
+                               levels=c(0, 1),
+                               labels=c("No", "Yes"))
+
+arch_tbl_df$t.new <- factor(arch_tbl_df$t.new, 
+                            levels=c(1, 2),
+                            labels=c("< 20 mm", ">= 20 mm"))
+
+arch_tbl_df$n.new <- factor(arch_tbl_df$n.new, 
+                            levels=c(0, 1),
+                            labels=c("No", "Yes"))
+
+arch_tbl_df$A090Inv <- factor(arch_tbl_df$A090Inv, 
+                              levels=c(1, 2),
+                              labels=c("Invasive", "Carcinoma in situ"))
+
+arch_tbl_df$her2 <- factor(arch_tbl_df$her2,
+                           levels=c(0, 1), 
+                           labels=c("Negative", "Positive"))
+
+if (do_adj) {
+  labels <- list(
+    variables=list(class="Case control status",
+                   age="Age",
+                   bmi="BMI",
+                   postmenop="Menopausal status",
+                   diagnosis.mode="Diagnosis mode",
+                   percent.density="Percent density",
+                   percent.dens.adj="BMI-adjusted percent density",
+                   area.density="Dense area",
+                   area.dens.adj="BMI-adjusted dense area",
+                   er.new="ER status",
+                   pr="PR status",
+                   her2="HER2 status",
+                   t.new="Tumour size (TNM T)",
+                   n.new="Lymph node metastasis (TNM N)",
+                   A090Inv="Invasiveness",
+                   hrt.ever="Ever had HRT"),
+    groups=list("", "Archetype cluster")
+  )
+} else {
+  labels <- list(
+    variables=list(class="Case control status",
+                   age="Age",
+                   bmi="BMI",
+                   postmenop="Menopausal status",
+                   diagnosis.mode="Diagnosis mode",
+                   percent.density="Percent density",
+                   area.density="Dense area",
+                   er.new="ER status",
+                   pr="PR status",
+                   her2="HER2 status",
+                   t.new="Tumour size (TNM T)",
+                   n.new="Lymph node metastasis (TNM N)",
+                   A090Inv="Invasiveness",
+                   hrt.ever="Ever had HRT"),
+    groups=list("", "Archetype cluster")
+  )
+}
+
+strata <- c(list(Total=arch_tbl_df), split(arch_tbl_df, arch_tbl_df$cluster))
+
+arch_tbl <- table1(strata, labels, groupspan=c(1, n_arch))
+arch_tbl
+
+```
+
+
+#### PCA and cluster counts
+
+The clusters are visualised by PCA, showing the first three principal components. The archetypes are shown with numbers. The data points can have different weights, showing how much they influenced the archetypes (if using Archetypal Analysis of the archetypes package). 
+
+```{r Scatter plot of pca}
+
+# Unified colour scheme for clusters
+arch_colour <- "Paired"
+
+pc_plots <- plot_pc123(arch_df, "cluster", printplots=F, dimred_arch=dimred_archetypes)
+pc12 <- pc_plots$pc12 + labs(title = NULL, colour = "Archetype")
+pc13 <- pc_plots$pc13 + labs(title = NULL, colour = "Archetype")
+pc23 <- pc_plots$pc23 + labs(title = NULL, colour = "Archetype")
+count_plot <- ggplot(arch_df) + geom_bar(aes(x = cluster, fill = cluster), show.legend = F) + labs(x = "Cluster", y = "Count") + scale_fill_brewer(palette = arch_colour)
+(pc12 + count_plot) / (pc13 + pc23) + plot_layout(guides = "collect")
+
+```
+
+### Replicates and doubles
+
+Replicate and doubles cluster memberships are predicted (by predicting the alpha coefficients for each replicate) and compared to their "originals" that were part of the archetypal analysis
+
+```{r replicate and doubles predict}
+
+# For replicates, only predict for cases and controls, since the doubles may be absent from the main MFI data frame (since only one sample from each doubles pair is in there)
+set.seed(123)
+if (use_archetypal) {
+  archetypes_temp <- archetypes(mfi[, -1], k=n_arch)
+  
+  # Change the archetype coordinates to the ones computed by the archetypal package
+  # Other than that, only the "scaling" entry in the list influences the prediction
+  # but the scaling is based on the input data frame, so it is the same whether 
+  # the analysis was done using the archetypes or the archetypal package
+  
+  archetypes_temp$archetypes <- arch$BY
+  repl_arch_pred <- predict(archetypes_temp, repl_residuals[which(repl_sinfo$Class != "Other"), ])
+  
+  double_arch_pred <- predict(archetypes_temp, double_residuals)
+  
+} else if (use_archetypes) {
+  repl_arch_pred <- predict(arch, repl_residuals[which(repl_sinfo$Class != "Other"), ])
+  double_arch_pred <- predict(arch, double_residuals)
+}
+
+# Get predicted and original cluster memberships for replicates
+rownames(repl_arch_pred) <- repl_sinfo$Sample.id[which(repl_sinfo$Class != "Other")]
+repl_membership <- max.col(repl_arch_pred)
+
+repl_cluster_df <- data.frame("sample"=repl_sinfo[which(repl_sinfo$Class != "Other"), "Sample.id"],
+                              "study.id"=repl_sinfo[which(repl_sinfo$Class != "Other"), "Tube.label"],
+                              "cluster_predict"=as.character(repl_membership))
+
+rownames(repl_cluster_df) <- repl_cluster_df$study.id
+
+repl_cluster_df$cluster_original <- NA
+for (r in repl_cluster_df$study.id) {
+  repl_cluster_df[r, "cluster_original"] <- arch_df[which(arch_df$study.id == r), "cluster"]
+}
+repl_cluster_df$same_cluster <- repl_cluster_df$cluster_predict == repl_cluster_df$cluster_original
+
+# Get predicted and original cluster memberships for doubles
+double_membership <- max.col(double_arch_pred)
+  
+doub_cluster_df <- data.frame("sample"=sinfo_w_doubles[rownames(double_residuals), "Sample.id"],
+                              "study.id"=sinfo_w_doubles[rownames(double_residuals),
+                                                         "Tube.label"],
+                              "cluster_predict"=as.character(double_membership))
+rownames(doub_cluster_df) <- doub_cluster_df$study.id
+
+doub_cluster_df$cluster_original <- NA
+for (d in doub_cluster_df$study.id) {
+  doub_cluster_df[d, "cluster_original"] <- arch_df[which(arch_df$study.id == d), "cluster"]
+}
+
+doub_cluster_df$same_cluster <- doub_cluster_df$cluster_predict == 
+  doub_cluster_df$cluster_original
+
+```
+
+
+```{r compare doubles and random pairs new version}
+
+# Pick out pairs of random samples (but not doubles)
+# Same number of random pairs as the number of  doubles pairs
+set.seed(123)
+nondouble_indices <- seq(nrow(arch_df))[-which(arch_df$class_wdouble == "Double")]
+rand_indices <- sample(nondouble_indices, nrow(doub_cluster_df)*2)
+
+# Divide random indices 
+rand_length <- length(rand_indices)
+rand_half1 <- rand_indices[1:(rand_length/2)]
+rand_half2 <- rand_indices[((rand_length/2)+1):rand_length]
+
+rand_pairs_df <- data.frame(
+  "studyid1"=arch_df$study.id[rand_half1],
+  "studyid2"=arch_df$study.id[rand_half2],
+  "cluster_mem1"=arch_df$cluster[rand_half1],
+  "cluster_mem2"=arch_df$cluster[rand_half2])
+
+rand_pairs_df$same_cluster <- rand_pairs_df$cluster_mem1 == rand_pairs_df$cluster_mem2
+
+# Perform Fisher test to check for significance
+same_cluster_table <- rbind("Replicate"=table(repl_cluster_df$same_cluster),
+                            "Double"=table(doub_cluster_df$same_cluster), 
+                            "Random"=table(rand_pairs_df$same_cluster))
+
+repl_doub_p <- fisher.test(same_cluster_table[c("Replicate", "Double"), ])$p.value %>%
+  signif(3)
+repl_rand_p <- fisher.test(same_cluster_table[c("Replicate", "Random"), ])$p.value %>%
+  signif(3)
+doub_rand_p <- fisher.test(same_cluster_table[c("Double", "Random"), ])$p.value %>%
+  signif(3)
+
+same_cluster_p <- c(doub_rand_p, repl_rand_p, repl_doub_p)
+# Swap p-values for asterisks
+same_cluster_p[as.numeric(same_cluster_p) >= 0.05] <- "N.S."
+same_cluster_p[as.numeric(same_cluster_p) < 0.05 & 
+                 as.numeric(same_cluster_p) >= 0.01] <- "*"
+same_cluster_p[as.numeric(same_cluster_p) < 0.01 &
+                 as.numeric(same_cluster_p) >= 0.001] <- "**"
+same_cluster_p[as.numeric(same_cluster_p) < 0.001] <- "***"
+
+same_cluster_df <- data.frame("same_cluster"=c(repl_cluster_df$same_cluster,
+                                               doub_cluster_df$same_cluster,
+                                               rand_pairs_df$same_cluster),
+                              "sample_type"=c(rep("Replicate", nrow(repl_cluster_df)),
+                                              rep("Double", nrow(doub_cluster_df)),
+                                              rep("Random", nrow(rand_pairs_df)))
+)
+same_cluster_df$sample_type <- factor(same_cluster_df$sample_type, 
+                                      levels=c("Random", "Double", "Replicate"))
+
+# Combinations for plotting statistical comparisons
+type_comb <- combn(c("Random", "Double", "Replicate"), 2, simplify=F)
+# Only keep those with p<0.05
+type_comb <- type_comb[which(same_cluster_p != "N.S.")]
+same_cluster_p <- same_cluster_p[which(same_cluster_p != "N.S.")]
+
+# Plot of counts of samples in same cluster
+count_plt <- ggplot(same_cluster_df) +
+  geom_bar(aes(x = sample_type, fill = same_cluster), position = "dodge") + 
+  labs(x = "Counts", y = NULL) +
+  scale_fill_manual(labels = c("Different clusters", "Same cluster"),
+                    values = c("#F8766D", "#00BFC4")) +
+  theme(legend.title = element_blank())
+
+# Plot of proportions of samples in same cluster
+ypos <- seq(1.03, 
+            1.03 + 0.08 * (length(same_cluster_p) - 1), 
+            by=0.08)
+
+prop_plt <-
+  same_cluster_df %>%
+  group_by(sample_type) %>%
+  count(same_cluster) %>%
+  mutate(Freq = n / sum(n)) %>%
+  ggplot() +
+  aes(sample_type, Freq, fill = same_cluster) +
+  geom_col(position = "fill") +
+  labs(y = "Proportions", x = NULL) + 
+  geom_signif(comparisons = type_comb,
+              annotations = same_cluster_p,
+              y_position = ypos,
+  						size = 1,
+  						textsize = 8,
+  						vjust = 0.5) + 
+  scale_fill_manual(labels = c("Different clusters", "Same cluster"),
+                    values = c("#F8766D", "#00BFC4")) +
+  theme_classic() + 
+  theme(legend.title = element_blank())
+
+```
+
+```{r random doubles replicate pairs proportions}
+
+# Only proportion plot, with counts in axis labels
+prop_plt + 
+	scale_x_discrete(labels=paste0(as.character(levels(same_cluster_df$sample_type)), 
+       paste0(" pair\nn=", same_cluster_df %>% count(sample_type) %>% pull(n))))
+
+```
+
+
+Predicted archetype coefficients are compared between replicates that ended up in the same cluster as their originals, and replicates that ended up in different clusters compared to their originals
+
+The difference between the first and the second archetype coefficients is compared 
+
+```{r compare replicates same or diff cluster}
+
+# Compare how the maximum and second maximum alphas are distributed for replicates that end up in the same cluster and replicates that end up in different clusters
+
+repl_cluster_df[which(repl_cluster_df$same_cluster), "same_cluster"] <- "Same_cluster"
+repl_cluster_df[which(repl_cluster_df$same_cluster == F), "same_cluster"] <- "Diff_cluster"
+
+# Get "real" archetype coefficients
+# Reorder them first since the order was changd before to be in ascending size
+if (use_archetypes) {
+	repl_cluster_df[, c("real_coeff_max", "real_coeff_2ndmax", "real_coeff_diff")] <- 
+		apply(repl_cluster_df, 1, function(x) {
+			coeffs <- arch$alphas[paste0(x["sample"], ".1"), new_order]
+			coeff_max <- max(coeffs)
+			coeff_2max <- max(coeffs[-which.max(coeffs)])
+			coeff_diff <- coeff_max - coeff_2max
+			return(c(coeff_max, coeff_2max, coeff_diff))
+	}) %>% t()
+} else if (use_archetypal) {
+	
+	repl_cluster_df[, c("real_coeff_max", "real_coeff_2ndmax", "real_coeff_diff")] <- 
+		apply(repl_cluster_df, 1, function(x) {
+			coeffs <- arch$A[paste0(x["sample"], ".1"), new_order]
+			coeff_max <- max(coeffs)
+			coeff_2max <- max(coeffs[-which.max(coeffs)])
+			coeff_diff <- coeff_max - coeff_2max
+			return(c(coeff_max, coeff_2max, coeff_diff))
+	}) %>% t()
+}
+
+repl_cluster_df$pred_coeff_max <- apply(repl_arch_pred, 1, function(r) {
+  max(r)
+})
+repl_cluster_df$pred_coeff_2ndmax <- apply(repl_arch_pred, 1, function(r) {
+  max(r[-which.max(r)])
+})
+repl_cluster_df$pred_coeff_diff <- 
+  repl_cluster_df$pred_coeff_max - repl_cluster_df$pred_coeff_2ndmax
+
+
+# Plot the difference 
+pred_diff <- ggplot(repl_cluster_df, aes(x = same_cluster, y = pred_coeff_diff, fill = same_cluster)) + 
+  geom_boxplot() + 
+	labs(x = "Both in same cluster", y = "Difference between \ntwo largest predicted coefficients") + 
+	scale_x_discrete(labels = c("No", "Yes")) + 
+  theme_classic() + 
+	theme(legend.position = "none") + 
+  geom_signif(comparisons = list(c("Same_cluster", "Diff_cluster")),
+  						size = 0.8, 
+  						textsize = 4) 
+
+real_diff <- ggplot(repl_cluster_df, aes(x = same_cluster, y = real_coeff_diff, fill = same_cluster)) + 
+	geom_boxplot() +
+	labs(x = "Both in same cluster", y = 'Difference between \ntwo largest "real" coefficients') + 
+	scale_x_discrete(labels = c("No", "Yes")) + 
+  theme_classic() + 
+	theme(legend.position = "none") + 
+	geom_signif(comparisons = list(c("Same_cluster", "Diff_cluster")),
+							size = 0.8, 
+							textsize = 4)
+
+pred_diff + real_diff 
+
+```
+
+
+### Heatmap
+
+A heatmap with proteins as rows and samples as columns is generated. The samples are ordered according to their clusters and the proteins are clustered and reordered by the pheatmap function (uses dist() and hclust() with euclidean distance and "complete" method). A static version is plotted here, see  
+/home/.../results/results_archetypal_analysis  
+for a dynamic interactive version and a static pdf version (for more zoomability). 
+
+```{r dev off until error, results="hide"}
+
+# Sometimes the heatmap is not rendered properly, seems to need to call dev.off(), but if there is no graphics device already open it gives an error, so here is a loop that keeps calling dev.off() and catches the error without stopping the code
+
+keep_loopin <- T
+
+while (keep_loopin) {
+  keep_loopin <- tryCatch(
+    {
+      dev.off()                   # Try dev.off()
+      T                           # If no error, keep_looppin will stay TRUE
+      },
+    error=function(cond) {        
+      return(F)                   # In case of error, keep_loopin is FALSE and the loop is terminated
+      })
+}
+
+```
+
+
+```{r Heatmap}
+heat_df2 <- data.frame("sample"=mfi$sample.antibody,
+                      "cluster"=clust_membership,
+                      mfi[, -1])
+
+# Order samples after cluster
+heat_df2 <- heat_df2[order(heat_df2$cluster), ]
+heat_mat <- t(heat_df2[, -c(1:2)])
+
+# For annotation of samples after clusters
+annot_df <- data.frame("row.names"=rownames(heat_df2),
+                       "Cluster"=as.factor(heat_df2$cluster))
+annot_colour <- brewer.pal(n_arch, arch_colour)
+names(annot_colour) <- c(as.character(1:n_arch))
+
+# defining range of colour scale 
+col_vec <- colorRampPalette(rev(brewer.pal(n=7, name="RdYlBu")))(100)
+col_scale <- seq(-5, 5, length.out=(1+length(col_vec)))
+
+# phm <- pheatmap(heat_mat, color=col_vec, breaks=col_scale, cluster_cols=F, treeheight_row=0,
+#                 annotation_col=annot_df, annotation_colors=list("Cluster"=annot_colour),
+#                 fontsize_row=0.5, fontsize_col=0.5, border_color=NA)
+
+# Version without row and column names
+phm2 <- pheatmap(heat_mat, colour=col_vec, breaks=col_scale, cluster_cols=F, treeheight_row=0,  annotation_col=annot_df,annotation_colors=list("Cluster"=annot_colour), show_colnames=F, show_rownames=F, border_color=NA)
+
+
+```
+
+
+```{r Save heatmap, eval=F}
+
+# Save a heatmap to be able to zoom well
+pheatmap(heat_mat, color=col_vec, breaks=col_scale, cluster_cols=F, treeheight_row=0, cluster_rows=as.hclust(phm$tree_row), annotation_col=annot_df, annotation_colors=list("Archetype"=annot_colour), fontsize_row=0.5, fontsize_col=0.5, border_color=NA, filename=paste0("/home/.../results/results_archetypal_analysis/pheatmap_", Sys.Date(), ".pdf"), height=8, width=12)
+
+dev.off()
+
+```
+
+```{r remove some cases and controls see comment, eval=F}
+
+# Try following analyses without cases that are prevalent & incident and controls that are prevalent
+arch_df_all <- arch_df
+arch_df <- arch_df_all %>% 
+	filter(!(prevalent_entry == 1 & incident_entry == 1)) %>% 
+	filter(!(class == "Control" & prevalent_entry == 1))
+
+sinfo2 <- sinfo[arch_df$sample, ]
+
+```
+

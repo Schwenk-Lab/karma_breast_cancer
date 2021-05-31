@@ -1,0 +1,446 @@
+---
+title: "Enrichment Analysis"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+---
+
+Leo Dahl  
+2020-04-23
+
+This is step number `r step_count` in a workflow containing the steps  
+`r step_list`.  
+Main script started on `r starting_time`, this step started on `r Sys.time()`.  
+Output files are generated in  
+`r out_dir2`.
+
+Normalisations that were performed:  
+**`r names(norm_opts[norm_opts == 1])`**
+
+Proteomics data adjusted for:  
+**`r names(which(linnorm_opts == 1))`**
+
+Package used for archetypal analysis:  
+`r if(use_archetypes){"**archetypes**"}else if(use_archetypal){"**archetypal**"}`
+
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+## Gene Set Enrichment Analysis
+
+Paired t-test between cluster 1 (small cluster of interest) and a merge of the rest of the clusters is performed for all antibodies. Antibodies are sorted in decreasing importance/increasing p-value and fed into GSEA for finding pathways in which they are overrepresented or underrepresented. 
+
+
+```{r t tests}
+
+
+## Perform t-test ##
+# All clusters except cluster of choice (enrichm_cluster) are merged into one big group since only interested in cluster 1 at the moment
+ttest_pvals <- apply(mfi[, -1], 2, function(c) {
+  t.test(x=c[arch_df[which(arch_df$cluster == as.character(enrichm_cluster)),
+                     "sample"]],
+         y=c[arch_df[which(arch_df$cluster != as.character(enrichm_cluster)),
+                     "sample"]])$p.value
+})
+
+## Input genes for GSEA ##
+# Order input genes in order of decreasing importance (increasing p-value)
+sorted_tp <- sort(ttest_pvals)
+
+# Get ENSG IDs
+gsea_ingene <- binfo[names(sorted_tp), "ENSG.ID"]
+names(gsea_ingene) <- names(sorted_tp)
+
+## Deal with antibodies targeting multiple proteins ##
+
+# New binfo with only the remaining Abs
+binfo_w_dupl <- binfo
+binfo <- binfo[colnames(mfi)[-1], ]
+
+singlebinders <- binfo[which(binfo$Multiple.target == 0), ]
+multibinders <- binfo[which(binfo$Multiple.target == 1 & binfo$remove_dupl_target != 1), ]
+
+# Get the targeted proteins as separate strings
+multib_list <- sapply(multibinders$ENSG.ID, function(s) {
+  strsplit(s, ",")
+})
+names(multib_list) <- multibinders$alt.ab.name
+
+# Generate new targets that are unique to not make pathway analysis unfair for multiple-target antibodies
+new_target <- vector("character", length(multib_list))
+names(new_target) <- names(multib_list)
+for (i in 1: length(multib_list)) {
+  ab <- names(multib_list)[i]
+  old_targets <- multib_list[[i]]
+  
+  for (ot in old_targets) {
+    if (any(ot == singlebinders$ENSG.ID) == F & ot %in% multib_list[-i] == F) {
+      # Check if the protein is the target of any single-target antibodies and
+      # if it appears as a target in any of the other multi-target antibodies
+      # If unique, use as target and move to next antibody
+      
+      new_target[i] <- ot
+      break
+    }
+  }
+}
+
+gsea_ingene[names(new_target)] <- new_target
+
+```
+
+
+```{r significant genes, eval=T}
+
+# Pick out significant genes, defined as those with an FDR below 0.05
+sorted_adjp <- p.adjust(sorted_tp, method="fdr")
+
+# Delta medians as a measure of effect size (median of normalised MFI values for that protein, for the samples in cluster of interest or rest of clusters)
+delta_medians <- apply(mfi[, -1], 2, function(column) {
+  
+  # Median for cluster of interest
+  arch_median <- median(column[
+    arch_df[which(arch_df$cluster == as.character(enrichm_cluster)), "sample"]])
+  
+  rest_median <- median(column[
+    arch_df[which(arch_df$cluster != as.character(enrichm_cluster)), "sample"]])
+  
+  delta_median <- arch_median - rest_median
+  
+})
+
+# Data frame of genes ordered by p-value
+all_genes_df <- data.frame(
+  "Gene_name"=binfo[names(sorted_tp), "Gene.name"],
+  "Gene_description"=binfo[names(sorted_tp), "Gene.description"],
+  "HPA_name"=binfo[names(sorted_tp), "Binder.name"],
+  "ENSG_ID"=binfo[names(sorted_tp), "ENSG.ID"],
+  "p_value"=sorted_tp,
+  "adj_p(FDR)"=sorted_adjp[names(sorted_tp)],
+  "delta_median"=delta_medians[names(sorted_tp)]
+)
+
+rownames(all_genes_df) <- NULL
+
+```
+
+Over-representation analysis with genes with FDR < 0.05 and top 50 significant genes
+
+```{r over-representation analysis}
+
+source_dbs <- c("GO:MF", "GO:BP", "REAC", "KEGG", "WP")
+
+# FDR < 0.05
+sign_ora <- gost(query = names(sorted_adjp[sorted_adjp < 0.05]),
+                 custom_bg = gsea_ingene,
+                 sources = source_dbs)
+
+# Top 50
+top50_ora <- gost(query = gsea_ingene[1:50],
+                  custom_bg = gsea_ingene,
+                  sources = source_dbs)
+
+```
+
+GSEA using the 'fgsea' package, printing the lowest FDR-adjusted p-value and the number of pathways with an adjusted p-value below 0.05
+
+```{r fgsea package, message=F, warning=F}
+
+# Try the fgsea package instead
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(fgsea)
+select <- dplyr::select
+
+# GSEA input data
+gsea_in <- data.frame(ensgid=gsea_ingene, 
+                      p=sorted_tp[names(gsea_ingene)],
+                      delta_median=delta_medians[names(gsea_ingene)])
+rownames(gsea_in) <- gsea_in$ensg
+
+# Get Entrez IDs necessary for input to get pathways
+entrezid <- AnnotationDbi::select(org.Hs.eg.db,
+                                  gsea_in$ensg,
+                                  c("ENTREZID", "ENSEMBL"),
+                                  "ENSEMBL")
+# Remove entries to have one Entrez ID per Ensg ID
+entrezid <- entrezid[!duplicated(entrezid$ENSEMBL), ]
+rownames(entrezid) <- entrezid$ENSEMBL
+gsea_in$entrezid <- entrezid[gsea_in$ensg, "ENTREZID"]
+
+# Scorings (signed z-score) for genes based on p-value and direction of regulation
+zscore <- qnorm(0.5*gsea_in$p, lower.tail=F)
+zscore[gsea_in$delta_median < 0] <- -zscore[gsea_in$delta_median < 0]
+names(zscore) <- gsea_in$entrezid
+
+# Retreive pathwayas containing the given IDs
+pws <- reactomePathways(gsea_in$entrezid)
+
+# Perform GSEA
+gsea_res <- fgsea(pathways=pws,
+                  stats=zscore, 
+                  minSize=5,
+                  maxSize=500,
+                  nperm=100)
+
+print(c("min_padj"=min(gsea_res$padj), "nbelow_0.05"=any(gsea_res$padj < 0.05)))
+
+```
+
+Next, look for differential expression of each cluster vs the merged remaining clusters and save the resulting tables
+
+```{r differential expression for all clusters}
+
+# Differential expression analysis for each cluster versus merged remaining clusters
+diff_expr_list <- vector("list", n_arch)
+names(diff_expr_list) <- paste0("Cluster_", 1:n_arch)
+
+for (clust in 1:n_arch) {
+  ttest_temp <- apply(mfi[, -1], 2, function(c) {
+    
+    # t test to check differential expression between cluster of interest vs the rest
+    t.test(x=c[arch_df[which(arch_df$cluster == as.character(clust)),
+                       "sample"]],
+           y=c[arch_df[which(arch_df$cluster != as.character(clust)),
+                       "sample"]])$p.value
+  }) 
+  
+  # delta median of cluster of interest vs the rest, as a measure of effect size
+  dmedian_temp <- apply(mfi[, -1], 2, function(c) {
+    median(c[arch_df[which(arch_df$cluster == as.character(clust)), "sample"]]) -
+      median(c[arch_df[which(arch_df$cluster != as.character(clust)), "sample"]])
+  })
+  
+  # Sort p values in order of decreasing significance and adjust using FDR method
+  sorted_p <- sort(ttest_temp)
+  sorted_adjp <- p.adjust(sorted_p, method="fdr")
+  
+  # Data frame with all genes
+  dexpr_df <- data.frame("Gene_name"=binfo[names(sorted_p), "Gene.name"],
+                         "Gene_description"=binfo[names(sorted_p), "Gene.description"],
+                         "HPA_name"=binfo[names(sorted_p), "Binder.name"], 
+                         "HPA_array_name"=names(sorted_p),
+                         "ENSG_ID"=binfo[names(sorted_p), "ENSG.ID"],
+                         "p_value"=sorted_p,
+                         "p_adjusted_FDR"=sorted_adjp,
+                         "Delta_median"=dmedian_temp[names(sorted_p)])
+  
+  # Data frame with top 10 upregulated and top 10 downregulated genes
+  top10updown_df <- rbind(
+    dexpr_df[which(dexpr_df$Delta_median > 0), ][1:10, ],
+    dexpr_df[which(dexpr_df$Delta_median < 0), ][1:10, ]
+  )
+  
+  diff_expr_list[[clust]]$all_genes <- dexpr_df
+  diff_expr_list[[clust]]$top10updown <- top10updown_df
+}
+
+```
+
+
+## Select top proteins by overlap
+
+From the DE results, proteins are chosen for more in-depth functional characterisation. The proteins are divided into upregulated and downregulated proteins, the 25 with the lowest p-values and the 25 with the highest effect size (signal median difference between groups) are selected and the overlap is used as the result. 
+
+```{r}
+de_res <- vector("list", n_arch)
+  
+for (i in 1:n_arch) {
+  de_res[[i]] <- diff_expr_list[[i]]$all_genes
+}
+
+nprot_overlap <- 25
+
+up_topn_p <- de_res[[1]] %>%
+  filter(Delta_median > 0) %>%
+  arrange(p_value) %>%
+  dplyr::slice(1:nprot_overlap)
+
+up_topn_dm <- de_res[[1]] %>%
+  filter(Delta_median > 0) %>%
+  arrange(desc(Delta_median)) %>%
+  dplyr::slice(1:nprot_overlap)
+
+up_overlap <- dplyr::intersect(up_topn_p, up_topn_dm)
+
+down_topn_p <- de_res[[1]] %>%
+  filter(Delta_median < 0) %>%
+  arrange(p_value) %>%
+  dplyr::slice(1:nprot_overlap)
+
+down_topn_dm <- de_res[[1]] %>%
+  filter(Delta_median < 0) %>%
+  arrange(Delta_median) %>%
+  dplyr::slice(1:nprot_overlap)
+
+down_overlap <- dplyr::intersect(down_topn_p, down_topn_dm)
+
+# Combine
+selected_proteins_overlap <- rbind(up_overlap, down_overlap)
+
+datatable(selected_proteins_overlap)
+
+de_volcano <- ggplot(de_res[[1]] %>% mutate(logP = -log10(p_value),
+                              Selected = ifelse(Gene_name %in%
+                                                  selected_proteins_overlap$Gene_name, 
+                                                ifelse(Delta_median < 0, 
+                                                       "Downregulated", "Upregulated"), 
+                                                "-"))) + 
+  geom_point(aes(x = Delta_median, y = logP, colour = Selected, shape = Selected)) + 
+	scale_shape_manual(values = c("Downregulated" = 21, "-" = 19, "Upregulated" = 21)) + 
+  scale_colour_manual(values = c("Downregulated" = "blue", "-" = "gray", "Upregulated" = "red")) + 
+  labs(x = "Delta median", y = "-log10(p)") + 
+  theme_classic() + 
+	theme(legend.title = element_text(size = 14), 
+				legend.text = element_text(size = 12),
+				axis.text = element_text(size = 12), 
+				axis.title = element_text(size = 14)) +
+	xlim(-4.3, 4.3)
+
+de_volcano
+
+```
+
+Looking at regression of some clinival variables and the selected proteins
+
+```{r linear or logistic regression for selected proteins}
+# Some variables to look at 
+clinvars <- c("class"="class", 
+              "hrt_status_merge2"="hrt_status_merge2",
+              "area.dens.adj"="area.dens.adj")
+
+# Give the names of the continuous variables. Continuous variables will be used for linear regression and categorical variables will be used for logistic regression 
+clinvar_cont <- c("area.density", "area.dens.adj")
+
+mfi_regr <- mfi_regr[, selected_proteins_overlap$HPA_array_name]
+
+# Linreg results in a list of data frames
+linreg_res <- lapply(clinvars, function(x) {
+    linreg_out <- data.frame(matrix(nrow = nrow(selected_proteins_overlap),
+                                    ncol = 5))
+    rownames(linreg_out) <- selected_proteins_overlap$HPA_array_name
+    colnames(linreg_out) <- c("binder", "gene.name", "coefficient", "p.value", "FDR")
+    linreg_out$binder <- rownames(linreg_out)
+    linreg_out$gene.name <- binfo[linreg_out$binder, "Gene.name"]
+
+    for (p in selected_proteins_overlap$HPA_array_name) {
+        linreg_in <- data.frame(prot=mfi_regr[arch_df$sample, p],
+                                clinvar=arch_df[, x],
+                                age=arch_df$age,
+                                bmi=arch_df$bmi,
+                                entry.date=arch_df$entry.date)
+        if (x %in% clinvar_cont) {
+          
+            linreg_in[, "clinvar"] <- as.numeric(linreg_in[, "clinvar"])
+            lm_res <- lm(clinvar ~ prot + age + bmi + entry.date, linreg_in) %>% summary()
+            linreg_out[p, c("coefficient", "p.value")] <- c(lm_res$coefficients["prot", "Estimate"], lm_res$coefficients["prot", "Pr(>|t|)"])
+            
+        } else {
+          
+            linreg_in[, "clinvar"] <- as.factor(linreg_in[, "clinvar"])
+            lm_res <- glm(clinvar ~ prot + age + bmi + entry.date, linreg_in, family = binomial) %>% summary()
+            linreg_out[p, c("coefficient", "p.value")] <- c(lm_res$coefficients["prot", "Estimate"], lm_res$coefficients["prot", "Pr(>|z|)"])
+        }
+    }
+    linreg_out$FDR <- p.adjust(linreg_out$p.value)
+    return(linreg_out)
+})
+
+```
+
+
+```{r heatmap of regression stuff}
+
+hm_clinvars <- c("hrt_status_merge2", "area.dens.adj")
+
+# Prepare data frame for heatmap
+hm_df <- sapply(names(linreg_res), simplify = F, USE.NAMES = T, function(x) {
+  clinvar_df <- linreg_res[[x]] 
+  clinvar_df$clinvar <- x
+  clinvar_df
+}) %>% data.table::rbindlist() %>%
+  as.data.frame() %>%
+  filter(clinvar %in% hm_clinvars)
+
+# Add variables indicating if nominal p-value is below 0.05 and which direction the coefficient has
+hm_df$p.stars <- ""
+hm_df$p.stars[hm_df$p.value <= 0.001] <- "***"
+hm_df$p.stars[hm_df$p.value <= 0.01 & hm_df$p.value > 0.001] <- "**"
+hm_df$p.stars[hm_df$p.value <= 0.05 & hm_df$p.value > 0.01] <- "*"
+hm_df$direction_linreg <- ifelse(hm_df$coefficient < 0, "Negative", "Positive")
+hm_df$delta_median <- selected_proteins_overlap[hm_df$binder, "Delta_median"]
+hm_df$direction_DE <- ifelse(hm_df$delta_median < 0, "Negative", "Positive")
+
+# Make data frames shaped for use with heatmap.2 function
+hm2_df <- dcast(hm_df, gene.name~clinvar, value.var = "coefficient")
+rownames(hm2_df) <- hm2_df$gene.name
+hm2_df <- hm2_df[, c("area.dens.adj", "hrt_status_merge2")]
+hm2_p <- dcast(hm_df, gene.name~clinvar, value.var = "p.stars")
+rownames(hm2_p) <- hm2_p$gene.name
+hm2_p <- hm2_p[, c("area.dens.adj", "hrt_status_merge2")]
+
+# cluster the genes
+hm_clust <- hclust(dist(hm2_df))
+
+# Get colours for annotation bar using direction of DE (only need values from one clinvar as they are the same for all)
+col_annot <- hm_df %>% filter(clinvar == hm_clinvars[1]) %>% select(gene.name, direction_DE)
+col_annot$colours <- ifelse(col_annot$direction_DE == "Positive", "lightskyblue1", "lightcoral")
+rownames(col_annot) <- col_annot$gene.name
+col_annot <- col_annot[rownames(hm2_df), ]
+
+# Colours for main cells
+cell_col <- colorRampPalette(c("red", "white", "blue"))(100)
+
+heatmap.2(t(as.matrix(hm2_df)),
+          cellnote = t(as.matrix(hm2_p)),
+          Colv = as.dendrogram(hm_clust), 
+          Rowv = F,
+          dendrogram = "column",
+          ColSideColors = col_annot$colours,
+          labRow = c("Adjusted\ndense area", 
+                     "MHT status"),
+          notecol = "black",
+          trace = "none",
+          key.title = "",
+          key.xlab = "Regression \ncoefficient",
+          col = cell_col, 
+          colsep = 1:nrow(hm2_df),
+          rowsep = 1:ncol(hm2_df), 
+          sepwidth = c(0.001, 0.001),
+          sepcolor = "grey",
+          margins = c(6, 12),
+          srtCol = 90,
+          density.info = "none",
+          cexRow = 1)
+
+legend("topright", title = "DE direction", 
+       legend = c("Upregulated", "Downregulated"),
+       fill = c("lightskyblue1", "lightcoral"),
+       cex = 0.7, box.lty = 0)
+
+```
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+
+</details>

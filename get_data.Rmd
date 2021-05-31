@@ -1,0 +1,1356 @@
+---
+title: "get_data"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+params: 
+  step_vec: 0
+  step_nr: 0
+  start_time: 0
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Leo Dahl  
+2020-01-27
+
+This is step number `r params$step_nr` in a workflow containing the steps  
+`r params$step_vec`.  
+Main script started on `r params$start_time`, this step started on `r Sys.time()`.  
+Output files are generated in  
+`r "home/.../results/"`.
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+
+</details>
+
+
+## Retrieving data for analysis
+
+```{r Initialize}
+
+# Paths to data in Orbit
+# Raw mean fluorescence intensity values
+mfi1_path <- "/home/.../....tsv"
+mfi2_path <- "/home/.../....tsv"
+
+# Sample info for each well, contains info on which wells contain cases, controls, pools or other things
+samp_info1_path <- "/home/.../....tsv"
+samp_info2_path <- "/home/.../....tsv"
+
+# Binder info for the assays, three different bead arrays are used
+bind_info1_path <- "/home/.../....tsv"
+bind_info2_path <- "/home/.../....tsv"
+
+```
+
+The raw fluorescence data, sample data such as information about the tubes and the information on binders are divided into two files, one per 384-plate.
+
+```{r Load the data}
+# MFI data
+mfi1 <- read.delim(mfi1_path)
+mfi2 <- read.delim(mfi2_path)
+
+# Sample info, add extra columns of info
+sinfo1 <- read.delim(samp_info1_path)
+sinfo2 <- read.delim(samp_info2_path)
+
+sinfo1$plate384 <- rep(1, nrow(sinfo1))
+sinfo1$plate96 <- as.numeric(substr(sinfo1$Plate.pos, 1, 1))
+
+sinfo2$plate384 <- rep(2, nrow(sinfo2))
+sinfo2$plate96 <- as.numeric(substr(sinfo2$Plate.pos, 1, 1))
+
+# Binder info
+binfo1 <- read.delim(bind_info1_path)
+binfo2 <- read.delim(bind_info2_path)
+
+# Clinical info
+# New updated clinical information
+cinfo_new <- read.delim("/home/.../....csv", sep=";")
+
+# KARMA core variables
+cinfo_core <- read.delim("/home/.../....csv", sep=";")
+
+# Tumour characteristic information
+tcinfo <- read.xlsx("/home/.../....xlsx", 1)
+
+# HRT and interval cancer information
+hrtinfo <- read.xlsx("/home/.../....xlsx", 1)
+
+# Polygenic Risk Scores (PRS)
+prsinfo <- read.csv("/home/.../....csv", sep=";")
+
+```
+
+
+### MFI and sample data
+The two different plates contain samples from different subjects, so MFI values from the two plates will be merged into one structure and the same goes for sample info. The last 96 samples in plate 2 are replicates of the last 96 samples of plate 1. 
+
+The MFI data has samples as rows and binders as columns. The binders are arranged in the order assay 3 (SBA2, 351 Abs), assay 4 (SBA3, 384 Abs), assay 1 (SBA1, 424 Abs) and assay  2 (SBA1, replicate).
+
+The sample info contains the samples as rows in the same order as in the MFI data. 
+
+
+```{r Merging and row names}
+mfi <- rbind(mfi1, mfi2)
+sinfo <- rbind(sinfo1, sinfo2)
+
+# Find the indices of the replicated samples
+repl_idx <- which(duplicated(mfi$sample.antibody) == TRUE)
+
+# Get the sample IDs of the replicates (and the originals since they share the same names)
+repl_id <- mfi$sample.antibody[repl_idx] 
+
+# Get the indices of the originals that were replicated
+original_idx <- chunk(which(mfi$sample.antibody == repl_id), n.chunks=2)[[1]]
+
+# Add replicate info in sinfo dataframe, 0 is no replicate, 1 is original and 2 is replicate
+sinfo$replicate <- rep(0, nrow(sinfo))
+sinfo$replicate[original_idx] <- 1
+sinfo$replicate[repl_idx] <- 2
+
+rownames(cinfo_new) <- cinfo_new$studieid
+rownames(cinfo_core) <- cinfo_core$studieid
+
+# Give the replicates new names (sample.1 for original, sample.2 for replicate)
+sinfo$new.names <- sinfo$Sample.id
+sinfo$new.names[original_idx] <- paste0(sinfo$new.names[original_idx], ".1")
+sinfo$new.names[repl_idx] <- paste0(sinfo$new.names[repl_idx], ".2")
+
+# Binder info dataframes contain the same information since both 384-plates used identical arrays
+# Set rownames to be the new sample names or the binder names for easier indexing
+# Also add assay number (A1, A2 etc) to column names of mfi to differentiate between different assays
+binfo1$alt.assay.name <- rep(0, nrow(binfo1))
+binfo1[binfo1$Assay == "AY485", "alt.assay.name"] <- "A1"
+binfo1[binfo1$Assay == "AY487", "alt.assay.name"] <- "A2"
+binfo1[binfo1$Assay == "AY146", "alt.assay.name"] <- "A3"
+binfo1[binfo1$Assay == "AY483", "alt.assay.name"] <- "A4"
+binfo1$alt.ab.name <- make.names(paste0(binfo1$Binder.name, "_", binfo1$alt.assay.name), unique=T)
+# Array 1 (used in assays 1 and 2) contains two anti human IgG, set unique=T to get unique names
+
+colnames(mfi) <- c(colnames(mfi)[1], 
+                   binfo1$alt.ab.name)
+rownames(binfo1) <- colnames(mfi)[-1]
+
+rownames(mfi) <- sinfo$new.names
+rownames(sinfo) <- sinfo$new.names
+
+# Keep only one entry per participant (the one with diagnosis closest to the sampling date, if same date take first entry) Raw data is already arranged like that so no need to do anything fancy
+
+tcinfo <- tcinfo[-which(duplicated(tcinfo$studieid)), ]
+rownames(tcinfo) <- tcinfo$studieid
+
+```
+
+
+```{r}
+
+# Add match IDs that are not in the sample info taken from the LIMS
+load("/home/.../....Rdata")
+
+d <- Karma_raw$A1.sba1$sample
+d <- d[-which(duplicated(d$id_lims)), ]     # Remove replicates to set row names
+rownames(d) <- d$id_lims
+sinfo$matchid <- d[sinfo$Sample.id, "matchid"] %>% as.character()
+
+rm(d, Karma, Karma_raw)
+
+```
+
+
+### Binder info
+There are several antibodies that target the same protein, as well as some antibodies that target multiple proteins. These should be investigated a bit. The files from the two plates use the exact same antibodies (since they use the same arrays), so only one file is investigated. The antibodies are listed in the same order as in the MFI file.
+
+```{r Assay indices, warning=FALSE}
+
+# Divide into different arrays
+# Assay names
+ass_name <- unique(binfo1$Assay)
+
+# "AY146" is assay 3 (SBA2), "AY483" is assay 4 (SBA3), "AY485" is assay 1 (SBA1) and "AY487" is assay 2 (SBA1) on 384-plate 1 (SL0036) (in that order in the different files)
+# On the second 384-plate the assays are "AY147" for assay 3, "AY484" for assay 4, "AY486" for assay 1 and "AY488" for assay 2
+# Antibody layouts on the two plates are the same, only need to get indices from one
+# Use these to extract the Abs of SBA 1, 2 and 3
+
+# Antibody indices of each assay 
+# Only used once later in this script for getting cet_fail_idx_long?
+ass1_ind <- which(binfo1$Assay == ass_name[3])
+ass2_ind <- which(binfo1$Assay == ass_name[4])
+ass3_ind <- which(binfo1$Assay == ass_name[1])
+ass4_ind <- which(binfo1$Assay == ass_name[2])
+
+```
+
+
+```{r Counting unique antibodies and proteins}
+
+unique_prot <- get_unique_prot(binfo1)
+unique_ab <- unique(binfo1$Binder.name)
+
+```
+
+In total there are `r length(unique_prot)` unique proteins targeted, and `r length(unique_ab)` unique antibodies.  
+
+#### Coupling Efficiency Test
+Some antibodies have failed the coupling efficiency test (MFI < 1000) and are not suitable for analysis. These are the following
+
+```{r CET, warning=FALSE}
+
+# warning = FALSE since loading the data gives the "incomplete final line found" error, but it does not seem to affect the loaded data 
+
+sba1 <- binfo1[ass1_ind, ]
+sba2 <- binfo1[ass3_ind, ]
+sba3 <- binfo1[ass4_ind, ]
+
+cet_sba1 <- read.delim("/home/.../....csv", header=TRUE, sep=",")
+cet_sba2 <- read.delim("/home/.../....csv", header=TRUE, sep=",")
+cet_sba3 <- read.delim("/home/.../....csv", header=TRUE, sep=",")
+
+# Bad antibody if MFI is below certain threshold
+cet_mfi_cutoff <- 1000
+
+cet_fail_idx <- lapply(list(cet_sba1[, -1],
+                            cet_sba2[, -1],
+                            cet_sba3[, -1]),
+                       function(bead_array) which(apply(bead_array, 2,
+                            function(Ab_col) median(Ab_col)) < cet_mfi_cutoff))
+
+cet_fail_df <- data.frame(
+  "Antibody"=c(sba1$Binder.name[cet_fail_idx[[1]]],
+               sba2$Binder.name[cet_fail_idx[[2]]],
+               sba3$Binder.name[cet_fail_idx[[3]]]),
+  "Array"=c(rep("1 (424plex, BA419)", length(cet_fail_idx[[1]])),
+            rep("2 (351plex, BA109)", length(cet_fail_idx[[2]])),
+            rep("3 (384plex, BA216)", length(cet_fail_idx[[3]]))),
+  "Index in array"=unlist(cet_fail_idx)
+)
+
+datatable(cet_fail_df, rownames=FALSE, 
+          caption=paste0("Antibodies that had an MFI below ", cet_mfi_cutoff, " in the coupling efficiency test."))
+
+```
+
+```{r extra stuff for future use}
+
+# Make structures that don't contain the replicated 96 samples or the results from assay 2, for future use in other scripts in the pipeline
+
+# MFI without the Abs that failed the CET, also list of MFI divided into different assays
+# Add 1 to antibody indices since there is one extra column in the MFI data frame
+
+mfi_list <- list("A1"=mfi[, rownames(binfo1[binfo1$Assay == "AY485", ])][, -cet_fail_idx[[1]]], 
+                 "A2"=mfi[, rownames(binfo1[binfo1$Assay == "AY487", ])][, -cet_fail_idx[[1]]],
+                 "A3"=mfi[, rownames(binfo1[binfo1$Assay == "AY146", ])][, -cet_fail_idx[[2]]], 
+                 "A4"=mfi[, rownames(binfo1[binfo1$Assay == "AY483", ])][, -cet_fail_idx[[3]]])
+
+mfi <- cbind("sample.antibody"=mfi$sample.antibody,
+             mfi_list$A3,
+             mfi_list$A4,
+             mfi_list$A1,
+             mfi_list$A2)
+
+# indices of bad Abs in the original long structures
+# ordered 2, 3, 1, 1 since that is the order in the data
+cet_fail_idx_long <- c(
+  cet_fail_idx[[2]],
+  cet_fail_idx[[3]] + length(ass3_ind),
+  cet_fail_idx[[1]] + length(ass3_ind) + length(ass4_ind), 
+  cet_fail_idx[[1]] + length(ass3_ind) + length(ass4_ind) + length(ass1_ind)
+)
+
+# Binder info without the Abs that failed the CET
+# binfo1 <- binfo1[-cet_fail_idx_long, ]
+binfo1$cet.fail <- rep(0, nrow(binfo1))
+binfo1$cet.fail[cet_fail_idx_long] <- 1
+
+unique_prot <- get_unique_prot(binfo1[binfo1$cet.fail != 1, ])
+unique_ab <- unique(binfo1[binfo1$cet.fail != 1, "Binder.name"])
+
+# Update assay indices to not contain Abs that failed CET
+# But these are not used anymore as far as I can tell?
+ass1_ind <- which(binfo1$Assay[binfo1$cet.fail == 0] == ass_name[3])
+ass2_ind <- which(binfo1$Assay[binfo1$cet.fail == 0] == ass_name[4])
+ass3_ind <- which(binfo1$Assay[binfo1$cet.fail == 0] == ass_name[1])
+ass4_ind <- which(binfo1$Assay[binfo1$cet.fail == 0] == ass_name[2])
+
+# Indices of the replicated samples
+repl_ind <- which(duplicated(mfi$sample.antibody) == TRUE)
+
+```
+
+```{r add more info}
+
+# Extract info about hospital and sampling date from clinical data
+# Hospital names are strange where there are åäö symbols
+cinfo_core$ipt_karma_unit <- gsub("\xf6", "o", cinfo_core$ipt_karma_unit)
+cinfo_core$ipt_karma_unit <- gsub("\xe5", "a", cinfo_core$ipt_karma_unit)
+cinfo_core[which(cinfo_core$ipt_karma_unit == ""), "ipt_karma_unit"] <- NA
+
+sinfo$hospital <- cinfo_core[as.character(sinfo$Tube.label), "ipt_karma_unit"]
+sinfo$entry.date <- cinfo_core[as.character(sinfo$Tube.label), "studyentry_date"]
+sinfo$diag.date <- as.Date(cinfo_core[as.character(sinfo$Tube.label), "bc_1stdiagdate"])
+sinfo$diag.date2 <- as.Date(cinfo_core[as.character(sinfo$Tube.label), "bc_2nddiagdate"])
+sinfo$prevalent <- cinfo_core[as.character(sinfo$Tube.label), "bc_prevalent"]
+sinfo$incident <- cinfo_core[as.character(sinfo$Tube.label), "bc_incident"]
+
+## Prevalent/Incident variable based on the diagnosis date and entry date. Incident if diagnosis date on the entry date
+sinfo$prevalent_entry <- ifelse(
+  as.Date(sinfo$diag.date) < as.Date(sinfo$entry.date) |
+  as.Date(sinfo$diag.date2) < as.Date(sinfo$entry.date),
+  "1", "0"
+)
+
+sinfo$prevalent_entry[is.na(sinfo$prevalent_entry)] <- "0"
+
+sinfo$incident_entry <- ifelse(
+  as.Date(sinfo$diag.date) >= as.Date(sinfo$entry.date) |
+  as.Date(sinfo$diag.date2) >= as.Date(sinfo$entry.date),
+  "1", "0"
+)
+
+sinfo$incident_entry[is.na(sinfo$incident_entry)] <- "0"
+
+sinfo$other_cancer <- cinfo_core[as.character(sinfo$Tube.label), "othercancer"]
+sinfo$other_cancer_prevalent <- cinfo_core[as.character(sinfo$Tube.label), "othercancer_prevalent"]
+sinfo$er.status <- as.character(cinfo_new[as.character(sinfo$Tube.label), "er"])
+sinfo$her2.status <- as.character(cinfo_new[as.character(sinfo$Tube.label), "her2"])
+sinfo$postmenop <- as.character(cinfo_core[as.character(sinfo$Tube.label), "postmenopausal"])
+sinfo$menop_status <- as.character(cinfo_core[as.character(sinfo$Tube.label), "menopause_status"])
+sinfo$hrt.ever <- as.character(cinfo_core[as.character(sinfo$Tube.label), "hrt_ever"])
+sinfo$hrt.status <- as.character(cinfo_core[as.character(sinfo$Tube.label), "hrt_status"])
+
+# Add more variables for LMM
+sinfo$smoke_pack_year <- cinfo_new[as.character(sinfo$Tube.label), "smoking_packyears"]
+sinfo$alcohol_g_week <- cinfo_new[as.character(sinfo$Tube.label), "alcohol_gram_week"]
+sinfo$contraception_ever <- cinfo_new[as.character(sinfo$Tube.label), "contraception_ever"] %>% as.character()
+sinfo$num_births <- cinfo_new[as.character(sinfo$Tube.label), "birth_times"]
+sinfo$parity <- ifelse(sinfo$num_births > 0, "1", "0")
+sinfo$menarche_age <- cinfo_new[as.character(sinfo$Tube.label), "menarche_age"]
+sinfo$menopause_age <- cinfo_new[as.character(sinfo$Tube.label), "menopause_age"]
+
+# Date of blood draw ("ipt_registration_date")
+# Also add percent density and absolute dense area 
+
+# Initialise density columns
+sinfo$percent.dens = sinfo$area.dens <- NA
+
+# Variable for sampling date? Although the values are very strange, so entry date is used
+sinfo$Sampling.date <- as.character(
+  as.Date(cinfo_core[as.character(sinfo$Tube.label), "ipt_registration_date"],
+          tryFormats=c("%d%B%Y:%H:%M:%S")) %>% format("%Y-%m-%d"))
+
+# Function for converting two-digit years to four-digit years
+# Input in format "%Y-%m-%d"
+year_2to4 <- function(x, year_boundary=2020) {
+	y <- as.numeric(substr(x, 1, 2))
+	y_long <- ifelse(y > year_boundary %% 100, y+1900, y+2000)
+	y_out <- paste0(y_long, substring(x, 3))
+	y_out[y_out == "NANA"] <- NA
+	y_out
+}
+
+sinfo$Sampling.date <- year_2to4(sinfo$Sampling.date)
+
+sinfo$percent.dens[sinfo$Tube.label != 0] <-
+  cinfo_new[
+    as.character(sinfo$Tube.label[sinfo$Tube.label != 0]),
+    "stratus_pd"]
+
+sinfo$area.dens[sinfo$Tube.label != 0] <- 
+  cinfo_new[
+    as.character(sinfo$Tube.label[sinfo$Tube.label != 0]), 
+    "stratus_densearea_cm2"]
+
+sinfo$bmi <- cinfo_new[as.character(sinfo$Tube.label), "bmi"]
+sinfo$samp.entry.diff <- as.Date(sinfo$Sampling.date) - as.Date(sinfo$entry.date)
+sinfo$diag.samp.diff <- as.Date(sinfo$diag.date) - as.Date(sinfo$Sampling.date)
+sinfo$diag2.samp.diff <- as.Date(sinfo$diag.date2) - as.Date(sinfo$Sampling.date)
+sinfo$diag.entry.diff <- as.Date(sinfo$diag.date) - as.Date(sinfo$entry.date)
+sinfo$diag2.entry.diff <- as.Date(sinfo$diag.date2) - as.Date(sinfo$entry.date)
+
+```
+
+
+```{r Recoding variables}
+
+## Adding and recoding tumour characteristic variables such as ER, HER2, t and n ##
+
+# Add old tnm classes
+sinfo$t <- as.character(cinfo_new[as.character(sinfo$Tube.label), "t"])
+sinfo$n <- as.character(cinfo_new[as.character(sinfo$Tube.label), "n"])
+
+# Recode old tnm classes
+sinfo$t.recode <- NA
+sinfo$n.recode <- NA
+
+for (samp in 1:nrow(sinfo)) {
+  
+  # t classes
+  # 1 if tumour not palpable or < 20 mm
+  if (sinfo$t[samp] %in% c("T0", "Tis", "T1") ) {
+    sinfo$t.recode[samp] <- "1"
+  } 
+  # 2 if >= 20 mm
+  else if (sinfo$t[samp] %in% c("T2", "T2a", "T3", "T4a", "T4b", "T4c")) {
+    sinfo$t.recode[samp] <- "2"
+  }
+  
+  # n classes
+  # 0 if no metastasis
+  if (sinfo$n[samp] %in% "N0") {
+    sinfo$n.recode[samp] <- "0"
+  }
+  # 1 if metastasis
+  else if (sinfo$n[samp] %in% c("N1", "N1a", "N1b", "N2", "N3")) {
+    sinfo$n.recode[samp] <- "1"
+  }
+  
+}
+
+# changing tube label column to character since tired of writing as.character, should really just move it up and remove the as.character calls for readability
+sinfo$Tube.label <- as.character(sinfo$Tube.label)
+
+
+# New tnm and er/her2/pr/ki67 data
+sinfo$A040Tklass <- tcinfo[sinfo$Tube.label, "a_tnm_tklass_Varde"] #t class
+sinfo$A040NKlass <- tcinfo[sinfo$Tube.label, "a_tnm_nklass_Varde"] # n class
+sinfo$A090InvCa <- tcinfo[sinfo$Tube.label, "op_pad_invasiv_Varde"] # A090 invasiveness
+sinfo$A100ER <- tcinfo[sinfo$Tube.label, "op_pad_er_Varde"] # ER
+sinfo$A100PR <- tcinfo[sinfo$Tube.label, "op_pad_pr_Varde"] # PR
+sinfo$A100HER2 <- as.character(tcinfo[sinfo$Tube.label, "op_pad_her2_Varde"]) # HER2
+sinfo$XR02KI67 <- as.character(tcinfo[sinfo$Tube.label, "op_pad_ki67proc"]) # ki67 percent
+sinfo$A100NHG <- as.character(tcinfo[sinfo$Tube.label, "op_pad_nhg_Varde"]) # PAD malignancy grade
+
+# Recoding new t, n, invasiveness, ER, PR variables
+
+sinfo$A100PR.recode =
+  sinfo$A100ER.recode =
+  sinfo$A090Inv.recode =
+  sinfo$A040N.recode =
+  sinfo$A040T.recode <- NA
+
+for (samp in 1:nrow(sinfo)) {
+  
+  # t class
+  if (sinfo$A040Tklass[samp] %in% c("0", "5", "10")) {
+    sinfo$A040T.recode[samp] <- "1"
+  } else if (sinfo$A040Tklass[samp] %in% c("20", "30", "42", "44", "45")) {
+    sinfo$A040T.recode[samp] <- "2"
+  }
+  
+  # n class
+  if (sinfo$A040NKlass[samp] %in% "0") {
+    sinfo$A040N.recode[samp] <- "0"
+  } else if (sinfo$A040NKlass[samp] %in% c("10", "20", "30")) {
+    sinfo$A040N.recode[samp] <- "1"
+  }
+  
+  # invasiveness
+  if (sinfo$A090InvCa[samp] %in% c("1", "3")) {
+    sinfo$A090Inv.recode[samp] <- "1"
+  } else if (sinfo$A090InvCa[samp] %in% "2") {
+    sinfo$A090Inv.recode[samp] <- "2"
+  }
+  
+  # ER
+  if (sinfo$A100ER[samp] %in% "1") {
+    sinfo$A100ER.recode[samp] <- "Positive"
+  } else if (sinfo$A100ER[samp] %in% "2") {
+    sinfo$A100ER.recode[samp] <- "Negative"
+  }
+  
+  # PR
+  if (sinfo$A100PR[samp] %in% "1") {
+    sinfo$A100PR.recode[samp] <- "Positive"
+  } else if (sinfo$A100PR[samp] %in% "2") {
+    sinfo$A100PR.recode[samp] <- "Negative"
+  }
+  
+  # NHG classification, turn 97 and 98 (not assessed or unknown) into NA
+  if (sinfo$A100NHG[samp] %in% c("97", "98")) {
+    sinfo$A100NHG[samp] <- NA
+  }
+  
+}
+
+```
+
+```{r add hrt info}
+
+sinfo$diagnosis_mode <- NA 
+sinfo$diagnosis_mode_diag2 <- NA      # diagnosis mode for second diagnosis, only for those that occur twice
+
+# Pick out the newer entries for those that occur twice
+# In this data, the newer entries are the second ones. So the indices that duplicated() gives are already the newer entries. Keep those separately from the rest and remove from main hrtinfo data frame to be able to use study ids as rownames
+hrt_mini <- hrtinfo[which(duplicated(hrtinfo$studieid)), ]
+hrtinfo <- hrtinfo[-which(duplicated(hrtinfo$studieid)), ]
+
+rownames(hrt_mini) <- hrt_mini$studieid
+rownames(hrtinfo) <- hrtinfo$studieid
+
+# diagnosis mode, indicates whether the tumour was found in diagnosis or in clinical mammography (interval cancer)
+sinfo$diagnosis_mode <- as.character(hrtinfo[sinfo$Tube.label, "a_diag_screening_Varde"])
+sinfo$diagnosis_mode_diag2 <- as.character(hrt_mini[sinfo$Tube.label, "a_diag_screening_Varde"])
+
+# Change 98 to NA 
+sinfo[which(sinfo$diagnosis_mode == "98"), "diagnosis_mode"] <- NA
+sinfo[which(sinfo$diagnosis_mode_diag2 == "98"), "diagnosis_mode_diag2"] <- NA
+
+# Ages at start and stop of treatment
+sinfo$hrt_start_age <- hrtinfo[sinfo$Tube.label, "hrt_startage"]
+sinfo$hrt_stop_age <- hrtinfo[sinfo$Tube.label, "hrt_stopage"]
+# And duration of treatment
+sinfo$hrt_dur_age <- sinfo$hrt_stop_age - sinfo$hrt_start_age
+
+# Type of HRT:
+# hpe = high potency estrogen only
+# mpe = medium potency estrogen only
+# mpep = medium potency estrogen with progestin continuous
+# mpeps = medium potency estrogen with progestin sequential
+# p = progestin only
+# lpe = low potency estrogen only
+
+sinfo$hrt_hpe <- hrtinfo[sinfo$Tube.label, "hrt_type_hpe"]
+sinfo$hrt_mpe <- hrtinfo[sinfo$Tube.label, "hrt_type_mpe"]
+sinfo$hrt_mpep <- hrtinfo[sinfo$Tube.label, "hrt_type_mpep"]
+sinfo$hrt_mpeps <- hrtinfo[sinfo$Tube.label, "hrt_type_mpeps"]
+sinfo$hrt_p <- hrtinfo[sinfo$Tube.label, "hrt_type_p"]
+sinfo$hrt_lpe <- hrtinfo[sinfo$Tube.label, "hrt_type_lpe"]
+
+# Only have 1 or NA, no distinction between missing or not taken, so turn all NA into 0
+sinfo[is.na(sinfo$hrt_hpe), "hrt_hpe"] <- 0
+sinfo[is.na(sinfo$hrt_mpe), "hrt_mpe"] <- 0
+sinfo[is.na(sinfo$hrt_mpep), "hrt_mpep"] <- 0
+sinfo[is.na(sinfo$hrt_mpeps), "hrt_mpeps"] <- 0
+sinfo[is.na(sinfo$hrt_p), "hrt_p"] <- 0
+sinfo[is.na(sinfo$hrt_lpe), "hrt_lpe"] <- 0
+
+# Merge categories based on the hormones
+# 1 --> just estrogen
+# 2 --> estrogen and progestine
+# 3 --> mixed
+type_merge <- apply(hrtinfo[, 13:18], 1, function(r) {
+    if (length(which(r == 1)) == 1) {
+        tp <- names(r)[which(r == 1)]
+        if(tp %in% c("hrt_type_hpe", "hrt_type_mpe", "hrt_type_lpe")) {
+            return("1")
+        } else if (tp %in% c("hrt_type_mpep", "hrt_type_mpeps", "hrt_type_p")) {
+            return("2")
+        }
+    } else if (length(which(r == 1)) == 2) {
+        return("3")
+    } else {
+        return(NA)
+    }
+})
+
+# Make new hrt type thing, make one column each for only e, only p, only e+p, or mix! like from new prescription data!
+hrt_newtypes <- apply(sinfo, 1, function(x) {
+	e <- any(c(x["hrt_lpe"] == 1, x["hrt_mpe"] == 1, x["hrt_hpe"] == 1))
+	p <- x["hrt_p"] == 1; names(p) <- NULL
+	pe <- any(c(x["hrt_mpep"] == 1, x["hrt_mpeps"] == 1))
+	mix <- length(which(c(e, p, pe))) > 1
+	
+	return(c("e"=e, "p"=p, "pe"=pe, "mix"=mix))
+}) %>% t()
+hrt_newtypes[hrt_newtypes] <- 1
+hrt_newtypes[isFALSE(hrt_newtypes)] <- 0
+
+hrtinfo$hrt_merge <- type_merge
+sinfo$hrt_merge <- hrtinfo[sinfo$Tube.label, "hrt_merge"]
+sinfo[, c("hrt_e_old", "hrt_p_old", "hrt_pe_old", "hrt_mix_old")] <-
+	hrt_newtypes[, c("e", "p", "pe", "mix")]
+
+# Get first start years of HRT and last stop years of HRT
+
+hrtstartcols <- which(substr(colnames(hrtinfo), 1, nchar("wom_hormonetreat_start")) == "wom_hormonetreat_start")
+
+hrtstopcols <- which(substr(colnames(hrtinfo), 1, nchar("wom_hormonetreat_finish")) == "wom_hormonetreat_finish")
+
+hrtdurcols <- which(substr(colnames(hrtinfo), 1, nchar("wom_hormonetreat_dur")) == "wom_hormonetreat_dur")
+
+hrt_start <- apply(hrtinfo, 1, function(r) {
+  drugstart <- r[hrtstartcols]
+  drugstart[which(drugstart == "1" | drugstart == "998" | drugstart == "")] <- NA
+  
+  if (all(is.na(drugstart))) {
+    return(NA)
+  } else {
+    return(min(drugstart, na.rm=T))
+  }
+})
+
+hrt_stop <- apply(hrtinfo, 1, function(r) {
+  drugstop <- r[hrtstopcols]
+  drugstop[which(drugstop == "998" | drugstop == "")] <- NA
+  
+  # If "1", still taking HRT so swap for study entry year
+  if ("1" %in% r[hrtstopcols]) {
+    studieid <- r["studieid"]
+    entrydate <- as.Date(sinfo[which(sinfo$Tube.label == studieid), "entry.date"])
+    entryyear <- format.Date(as.character(entrydate), "%Y")
+    drugstop[which(drugstop == "1")] <- entryyear[1]
+  }
+  
+  if (all(is.na(drugstop))) {
+    return(NA)
+  } else {
+    return(max(drugstop, na.rm=T))
+  }
+})
+
+
+# HRT durations from the sum of the durations of ech drug, as opposed to getting it from the stop age and start age of HRT
+hrt_durs <- apply(hrtinfo, 1, function(r) {
+  drugdur <- r[hrtdurcols]
+  drugdur[which(drugdur == "998" | drugdur == "")] <- NA
+  
+  if (all(is.na(drugdur))) {
+    return(NA)
+  } else {
+    return(sum(as.numeric(drugdur), na.rm=T))
+  }
+  
+})
+
+
+hrtinfo$hrtstart <- hrt_start
+sinfo$hrt_start <- as.numeric(hrtinfo[sinfo$Tube.label, "hrtstart"])
+
+hrtinfo$hrtstop <- hrt_stop
+sinfo$hrt_stop <- as.numeric(hrtinfo[sinfo$Tube.label, "hrtstop"])
+
+hrtinfo$hrt_dur_years <- as.numeric(hrt_stop) - as.numeric(hrt_start)
+sinfo$hrt_dur_years <- hrtinfo[sinfo$Tube.label, "hrt_dur_years"]
+
+hrtinfo$hrt_dur_sum <- hrt_durs
+sinfo$hrt_dur_sum <- as.numeric(hrtinfo[sinfo$Tube.label, "hrt_dur_sum"])
+
+# Calculate years between stop of HRT and blood draw for KARMA
+sinfo$samp_hrtstop_diff <- as.numeric(format.Date(sinfo$Sampling.date, "%Y")) - as.numeric(sinfo$hrt_stop)
+
+sinfo$entry_hrtstop_diff <- as.numeric(format.Date(sinfo$entry.date, "%Y")) - as.numeric(sinfo$hrt_stop)
+
+sinfo$entry_hrtstart_diff <- as.numeric(format.Date(sinfo$entry.date, "%Y")) - as.numeric(sinfo$hrt_start)
+
+```
+
+
+```{r polygenic risk scores}
+
+# Add info about polygenic risk score (PRS)
+rownames(prsinfo) <- prsinfo$studieid
+sinfo$prs <- prsinfo[as.character(sinfo$Tube.label), "PRS_overall"]
+
+```
+
+Now there are `r length(unique_prot)` unique proteins and `r length(unique_ab)` unique antibodies.  
+
+```{r new clinical data, eval=T}
+
+## --- Loading the data --- ##
+
+# Newly extracted tumour characteristics
+newclin_data <- read.xlsx("/home/.../....xlsx")
+
+# Columns starting with "neo_" are not of interest, only those starting with "s_"
+newclin_data <- newclin_data[
+  , -which(str_detect(colnames(newclin_data), "neo_"))
+]
+
+# Have duplicate study IDs
+# rownames(newclin_data) <- newclin_data$studieid
+# Will treat them separately, using both of the entries of each duplicate
+
+# Data frame with only IDs with multiple entries
+newclin_dupl_ind <- which(newclin_data$nr == 2)
+newclin_dupl <- newclin_data[
+  newclin_data$studieid %in% newclin_data$studieid[newclin_dupl_ind], ] %>%
+  arrange(studieid)
+
+# Data frame without any of the duplicated entries
+newclin_data <- newclin_data[
+  -which(newclin_data$studieid %in% newclin_data$studieid[newclin_dupl_ind]), ]
+rownames(newclin_data) <- newclin_data$studieid
+
+
+## --- Extracting relevant information --- ##
+# Go through rows and classify each participant for each variable of interest
+# Two columns exist for each variable, "..._1" and "..._2", for different tumours
+# Must therefore check both and classify based on their values
+# Variables of interest: 
+# "s_er_status_n": ER status
+# "s_pr_status_n": PR status
+# "s_her2neu_n": HER2 status
+# "s_invasive_n" and "s_cancer_in_situ_n": Invasiveness
+# "s_total_tumour_size_n": Tumour size
+# "s_cell_differention_grade_n": Differentiation grade of the tumour, use Nottingham scale
+# (use "s_cell_differention_n" to tell Nottingham scale apart from Elston ellis scale)
+# "s_multiple_tumours": Whether there are multiple tumours or not
+# "s_number_of_tumours": Number of tumours
+# "s_tumor_nottingham_t_n", "s_tumor_nottingham_n_n", "s_tumor_nottingham_m_n": tubule formation, nuclear pleomorphism, mitotic activity according to Nottingham scale
+# "s_vessel_growth_n": Vessel growth 
+# "s_proliferation_n": Positive proliferation marker (ki-67, mib-1, s-fas)
+# "s_proliferation_value_surgery_1_n": Value measured in surgery for proliferation marker
+
+
+# Make function for picking out a prioritised value, in case there were multiple tumours
+pick_prio <- function(in_vec, prio_vec) {
+    # Function for picking out one value from a vector, according to a prioritisation, returns the value of highest priority as a character if there is a match. If no match, NA is returned
+    # in_vec: vector from which to pick one value
+    # prio_vec: vector containing values in order of highest priority to pick
+    
+    prio_in_input <- sapply(prio_vec, function(x) x %in% in_vec)
+    names(prio_in_input) <- as.character(prio_vec)
+    first_match <- prio_in_input[match(T, prio_in_input)]
+    
+    return(names(first_match))
+}
+
+# Make new df with one studieid per row using apply function, go through newclin_data and classify 
+new_tumour_info <- apply(newclin_data, 1, function(x) {
+  
+  # Make temporary function for getting columns, for less confusion when writing
+  getcol <- function(in_vec, regexstr) {
+    out_vec <- in_vec[str_detect(names(in_vec), regexstr)] %>% trimws()
+    return(out_vec)
+  }
+  
+  ## ER status
+  er <- x[str_detect(names(x), "s_er_status_\\d")] %>% trimws()
+  
+  # If have values from multiple tumours, prioritise positive ("1")
+  er <- pick_prio(er, c("1", "0"))
+  
+  ## PR status
+  pr <- getcol(x, "s_pr_status_\\d")
+  pr <- pick_prio(pr, c("1", "0"))
+  
+  ## HER2/neu status
+  her2neu <- getcol(x, "s_her2neu_\\d")
+  her2neu <- pick_prio(her2neu, c("1", "0"))
+  
+  ## Invasiveness
+  inv <- getcol(x, "s_invasive_\\d")
+  inv <- pick_prio(inv, c("1", "2"))
+  
+  cinsitu <- getcol(x, "s_cancer_in_situ_\\d")
+  cinsitu <- pick_prio(cinsitu, c("2", "1")) # Prioritise not in situ
+  
+  # For in situ, need both in situ to be 1 ("Yes") and invasive to be 2 ("No")
+  # If any of two tumours is invasive, class as invasive
+  # If any is 998 ("Unknown"), classify as NA?
+  if (is.na(inv) | is.na(cinsitu)) {invasiveness <- NA}
+  else if (inv == "1") {invasiveness <- "1"}
+  else if (cinsitu == "1" & inv == "2") {invasiveness <- "0"}
+  else {invasiveness <- NA}
+  
+  ## Tumour size
+  # s_total_tumour_size_n contains information about unit of measure (typically mm ("1"))
+  # s_total_tumour_size_other_n contains the value
+  tsize_unit <- getcol(x, "s_total_tumour_size_\\d+$")
+  tsize_unit <- pick_prio(tsize_unit, c("1", "998")) # Wait this is not how this works, the "1" has to have the same index as the measurement, they are matching! oh well, all "998" seem to be matched to no measurement so it should be fine this way
+  tsize <- getcol(x, "s_total_tumour_size_\\d_other_\\d")
+  
+  # Size value can be given as just a number, or as multiple dimensions of the tumour (x*y*z)
+  # Exclude those that are not measurements ("", "na" or "998") and others that are not measurements ("994", "<1")
+  names(tsize) <- NULL      # Will get warnings if names are still there
+  tsize <- tsize[!(tsize %in% c("", "na", "998", "994", "<1"))]
+  
+  # If nothing left, return NA. If contains "*", split and take largest number. If no "*", just use the number directly
+  if (length(tsize) == 0) {tsize <- NA}
+  else if (any(str_detect(tsize, "\\*"))) {
+    dim_index <- str_detect(tsize, "\\*")
+    split_dim <- strsplit(tsize[dim_index], "\\*")
+    tsize[dim_index] <- max(split_dim[[1]])
+    tsize <- max(as.numeric(tsize))
+  } else {
+    tsize <- max(as.numeric(tsize))
+  }
+    
+  # Only keep measurement if unit is defined (and is mm, but no other units used)
+  if(!is.na(tsize_unit)) {if(tsize_unit != "1") {tsize <- NA}}
+  
+  ## Cell differentiation grade (Nottingham)
+  # Used system (2 is Nottingham, 3 is Elston ellis)
+  diffsyst <- getcol(x, "s_cell_differention_\\d+$")
+  
+  # Value
+  diffval <- getcol(x, "s_cell_differention_grade_\\d")
+  
+  # Only use value if nottingham ("2")
+  diffnott <- str_extract(names(diffsyst)[which(diffsyst == "2")], "\\d")
+  diffval <- diffval[paste0("s_cell_differention_grade_", diffnott)] %>%
+    as.numeric() %>%
+    max()
+  
+  ## Multiple tumours or not
+  multitum <- getcol(x, "s_multiple_tumours")
+  multitum[multitum == 998] <- NA
+  multitum[multitum == 2] <- 0
+  names(multitum) <- NULL
+  
+  ## Number of tumours
+  tumnum <- getcol(x, "s_number_of_tumours")
+  tumnum[tumnum == 998] <- NA
+  names(tumnum) <- NULL
+  
+  ## Nottingham scale values (different parameters used to get total grade)
+  # Get highest value if multiple
+  nott_t <- getcol(x, "s_tumor_nottingham_t") 
+  nott_t <- nott_t[!is.na(nott_t)]
+  nott_t <- ifelse(length(nott_t) > 0, max(nott_t), NA)
+  
+  nott_n <- getcol(x, "s_tumor_nottingham_n")
+  nott_n <- nott_n[!is.na(nott_n)]
+  nott_n <- ifelse(length(nott_n) > 0, max(nott_n), NA)
+  
+  nott_m <- getcol(x, "s_tumor_nottingham_m")
+  nott_m <- nott_m[!is.na(nott_m)]
+  nott_m <- ifelse(length(nott_m) > 0, max(nott_m), NA)
+  
+  ## Vessel growth
+  vgrowth <- getcol(x, "s_vessel_growth_\\d")
+  vgrowth <- pick_prio(vgrowth, c("1", "2"))
+  vgrowth[vgrowth == "2"] <- "0"
+  
+  ## Proliferation markers
+  # "1": ki-67, "2": mib-1, "3":s-fas. 
+  # Have mostly ki-67, some mib-1, no s-fas. No mixed measurements of both ki-67 and mib-1, so use pick_prio function
+  pmarker <- getcol(x, "s_proliferation_\\d")
+  pmarker <- unique(pick_prio(pmarker, c("1", "2")))
+  pmarker[pmarker == "1"] <- "ki-67"
+  pmarker[pmarker == "2"] <- "mib-1"
+  
+  ## Proliferation marker value, be a bit more specific in regex here due to confusing column names and multiple columns
+  pmval <- getcol(x, "s_proliferation_value_surgery_1_|s_proliferation_value_surgery_11") %>%
+    as.numeric()
+  names(pmval) <- NULL
+  pmval <- pmval[!is.na(pmval)]
+  pmval <- pmval[pmval != 994]
+  if (length(pmval) != 0) {pmval <- max(pmval)}
+  else {pmval <- NA}
+  
+  return(c( x["studieid"],
+    "er_new"=er, "pr_new"=pr, "her2_new"=her2neu, 
+    "inv_new"=invasiveness, "tsize_new"=tsize, 
+    "nottingham_new"=diffval, "multiple_tum"=multitum, "tumour_num"=tumnum,
+    "nottingham_t"=nott_t, "nottingham_n"=nott_n, "nottingham_m"=nott_m,
+    "vessel_growth"=vgrowth, "prolif_marker"=pmarker, "prolif_value"=pmval
+  ))
+}) %>% 
+  t() %>%
+  as.data.frame()
+
+
+# Repeat everything for the individuals that appeared twice
+# Since each study id has two rows, both rows are extracted, results from each row are decided using the pick_prio function, and the row results are again prioritised using the pick_prio function
+new_tumour_info_dupl <- sapply(unique(newclin_dupl$studieid), function(y) {
+  x <- newclin_dupl %>%
+    filter(studieid == y)
+  
+  getcol <- function(in_df, regexstr) {
+    out_df <- in_df[, str_detect(colnames(in_df), regexstr)] 
+    return(out_df)
+  }
+  
+  ## ER status
+  er <- apply(getcol(x, "s_er_status_\\d"), 1, function(z) {
+    pick_prio(trimws(z), c("1", "0"))
+  }) %>%
+    pick_prio(c("1", "0"))
+  
+  ## PR status
+  pr <- apply(getcol(x, "s_pr_status_\\d"), 1, function(z) {
+    pick_prio(trimws(z), c("1", "0"))
+  }) %>%
+    pick_prio(c("1", "0"))
+  
+  ## HER2/neu status
+  her2neu <- apply(getcol(x, "s_her2neu_\\d"), 1, function(z) {
+    pick_prio(trimws(z), c("1", "0"))
+  }) %>%
+    pick_prio(c("1", "0"))
+  
+  ## Invasiveness
+  inv <- apply(getcol(x, "s_invasive_\\d"), 1, function(z) {
+    pick_prio(trimws(z), c("1", "2"))
+  }) %>%
+    pick_prio(c("1", "2"))
+  
+  cinsitu <- apply(getcol(x, "s_cancer_in_situ_\\d"), 1, function(z) {
+    pick_prio(trimws(z), c("2", "1"))
+  }) %>%
+    pick_prio(c("2", "1"))
+  
+  if (is.na(inv) | is.na(cinsitu)) {invasiveness <- NA}
+  else if (inv == "1") {invasiveness <- "1"}
+  else if (cinsitu == "1" & inv == "2") {invasiveness <- "0"}
+  else {invasiveness <- NA}
+  
+  ## Tumour size
+  tsize_unit <- apply(getcol(x, "s_total_tumour_size_\\d+$"), 1, function(z) {
+    pick_prio(trimws(z), c("1", "998")) # Again not quite a general way to do this, if any row has 998 coupled with a measurement there may be errors, but in this data no such cases exist 
+  }) %>%
+    pick_prio(c("1", "998"))
+  
+  # In this case only one column has any information, just pick that
+  tsize <- x$s_total_tumour_size_1_other_1
+  tsize <- tsize[!(tsize %in% c("", NA, "998", "994"))]
+  if(any(str_detect(tsize, "\\*"))){
+    tsize <- strsplit(tsize, "\\*")[[1]]
+  }
+  tsize <- max(as.numeric(tsize))
+  
+  # Only keep measurement if unit is defined (and is mm, but no other units used)
+  if(!is.na(tsize_unit)) {if(tsize_unit != "1") {tsize <- NA}}
+  
+  ## Nottingham differentiation grade
+  # Only one column again, all are according to the Nottingham scale
+  diffval <- x[, "s_cell_differention_grade_1"] %>% 
+    as.numeric() %>%
+    max(na.rm=T)
+  
+  ## Multiple tumours or not
+  multitum <- x$s_multiple_tumours %>%
+    pick_prio(c(1, 2))
+  
+  multitum[multitum == "2"] <- "0"
+  
+  ## Number of tumours
+  tumnum <- x$s_number_of_tumours
+  tumnum <- tumnum[!is.na(tumnum)]
+  if(length(tumnum) > 0){tumnum <- max(as.numeric(tumnum))}
+  else{tumnum <- NA}
+  
+  ## Nottingham t,n,m
+  nott_t <- x$s_tumor_nottingham_t_1_1
+  nott_n <- x$s_tumor_nottingham_n_1_1
+  nott_m <- x$s_tumor_nottingham_m_1_1
+  
+  nott_t <- nott_t[!is.na(nott_t)]
+  nott_n <- nott_n[!is.na(nott_n)]
+  nott_m <- nott_m[!is.na(nott_m)]
+  
+  nott_t <- ifelse(length(nott_t) > 0, max(as.numeric(nott_t)), NA)
+  nott_n <- ifelse(length(nott_n) > 0, max(as.numeric(nott_n)), NA)
+  nott_m <- ifelse(length(nott_m) > 0, max(as.numeric(nott_m)), NA)
+  
+  ## Vessel growth
+  vgrowth <- x$s_vessel_growth_1
+  vgrowth <- pick_prio(vgrowth, c("1", "2"))
+  vgrowth[vgrowth == "2"] <- "0"
+  
+  ## Proliferation markers, all are ki-67
+  pmarker <- x$s_proliferation_1
+  pmarker <- unique(pick_prio(pmarker, c("1", "2")))
+  pmarker[pmarker == "1"] <- "ki-67"
+  pmarker[pmarker == "2"] <- "mib-1"
+  
+  ## Proliferation marker values
+  pmval <- x$s_proliferation_value_surgery_11 %>% as.numeric()
+  pmval <- pmval[!is.na(pmval)]
+  pmval <- pmval[pmval != 994]
+  pmval <- ifelse(length(pmval) > 0, max(pmval), NA)
+  
+  return(c("studieid"=unique(x$studieid), 
+    "er_new"=er, "pr_new"=pr, "her2_new"=her2neu, 
+    "inv_new"=invasiveness, "tsize_new"=tsize, 
+    "nottingham_new"=diffval, "multiple_tum"=multitum, "tumour_num"=tumnum,
+    "nottingham_t"=nott_t, "nottingham_n"=nott_n, "nottingham_m"=nott_m,
+    "vessel_growth"=vgrowth, "prolif_marker"=pmarker, "prolif_value"=pmval
+  ))
+  
+}) %>%
+  t() %>%
+  as.data.frame()
+
+rownames(new_tumour_info_dupl) <- unique(newclin_dupl$studieid)
+
+new_tumour_info <- rbind(new_tumour_info, new_tumour_info_dupl)
+
+```
+
+
+```{r new hrt data, eval=T}
+
+### --- Loading data --- ###
+
+# Data from the Swedish prescription registry
+prescr_data <- read.xlsx("/home/.../....xlsx", 1)
+
+rownames(prescr_data) <- prescr_data$studieid
+
+### --- Extracting information --- ###
+# Go through ATC codes and get HRT types
+# "g03X..." where
+# X = d, Progestogens
+# X = f, Progestogen and estrogen combined
+# X = c, Estrogen
+
+# Also get statin usage, have ATC codes of the form "c10aaNN" where N = digit
+
+# Also make parameter for if participants ever used HRT, but maybe not as good as the one in the old data? Unlikely to remember all kinds of HRT used and when exactly, but likely to remember if they ever used HRT at all. New data only has information from 2005 onward
+
+# Getting time periods of usage, earliest starting date, latest stopping date
+# All dates have been converted to numbers with origin at 1899-12-30. These will be converted back to proper dates determining starting dates and stopping dates
+
+# Use data table format to be able to use expression found on stack overflow for merging overlapping time periods, I guess I should learn about data table syntax
+hrt_statin_info <- apply(prescr_data, 1, function(x) {
+  
+  studyid <- x["studieid"]
+  
+  # Get the entry date for the participant
+  entrydate <- sinfo[which(sinfo$Tube.label == studyid), "entry.date"][1] %>%
+    as.Date() %>%
+    format()
+  
+  ### HRT ###
+  # Get indices for HRT-containing columns, index here refers to the number in "atc_1", "atc_2" etc. These indices are shared by the corresponding columns containing info about starting time ("fdatum_n") and ending time ("edatum_n")
+  atc_indices <- str_extract(
+    names(x)[which(str_detect(x, "g03"))], "\\d+"
+  )
+  
+  # Get dates (or rather, number od days since Excel's origin date 1899-12-30) and compute non-overlapping periods
+  start_dates_all <- as.numeric(x[paste0("fdatum_", atc_indices)])
+  end_dates_all <- as.numeric(x[paste0("edatum_", atc_indices)])
+  
+  # If start date is after entry date, don't use and remove end date and ATC as well
+  atc_indices <- atc_indices[which(as.Date(start_dates_all, origin="1899-12-30") <=
+                                          entrydate)]
+  end_dates <- end_dates_all[which(as.Date(start_dates_all, origin="1899-12-30") <= entrydate)]
+  start_dates <- start_dates_all[which(as.Date(start_dates_all, origin="1899-12-30") <= entrydate)]
+
+  # If end date is after entry date, set to entry date
+  end_dates[which(as.Date(end_dates, origin="1899-12-30") > entrydate)] <-
+    as.numeric(as.Date(entrydate) - as.Date("1899-12-30"))
+  
+  # Get info on which HRT types have been used
+  p <- any(str_detect(x[paste0("atc_", atc_indices)], "g03d"))
+  e <- any(str_detect(x[paste0("atc_", atc_indices)], "g03c"))
+  pe <- any(str_detect(x[paste0("atc_", atc_indices)], "g03f"))
+  mix <- ifelse(length(which(c(p, e, pe))) > 1, T, F)
+  hrt_ever <- any(c(p, pe, e))
+  
+  if(length(atc_indices) > 0) {
+    # Starting date and ending dates
+    hrt_first_start <- format(as.Date(min(start_dates), origin="1899-12-30"))
+    hrt_last_end <- format(as.Date(max(end_dates), origin="1899-12-30"))
+  
+    # Data table for getting non-overlapping time periods
+    times <- data.table::data.table(start=start_dates,
+                                    end=end_dates,
+                                    id=1)
+    nonoverlap_times <- times[, g := c(0L, cumsum(data.table::shift(start, -1L) > cummax(end))[-.N]), id][, .(min(start), max(end)), .(g, id)]
+  
+    # Add one day to each end date, to account for starting day in duration calculation
+    nonoverlap_times$V2 <- nonoverlap_times$V2 + 1
+  
+    # Sum of usage period
+    hrt_usage_period <- sum(as.numeric(nonoverlap_times$V2) - as.numeric(nonoverlap_times$V1))
+  } else {
+     #If no ATC codes
+    hrt_first_start = hrt_last_end <- NA
+    p = e = pe = hrt_ever = mix = hrt_usage_period <- 0
+  }
+  
+  ### Statins ###
+  # Get indices for Statin-containing columns
+  atc_indices <- str_extract(
+    names(x)[which(str_detect(x, "c10aa"))], "\\d+"
+  )
+
+  # Starting and ending dates for getting first start and last end dates
+  start_dates_all <- as.numeric(x[paste0("fdatum_", atc_indices)])
+  end_dates_all <- as.numeric(x[paste0("edatum_", atc_indices)])
+
+  # If start date is after entry date, don't use and remove end date  and ATC as well
+  atc_indices <- atc_indices[which(as.Date(start_dates_all, origin="1899-12-30") <=
+                                          entrydate)]
+  end_dates <- end_dates_all[which(as.Date(start_dates_all, origin="1899-12-30") <= entrydate)]
+  start_dates <- start_dates_all[which(as.Date(start_dates_all, origin="1899-12-30") <= entrydate)]
+
+  # If end date is after entry date, set to entry date
+  end_dates[which(as.Date(end_dates, origin="1899-12-30") > entrydate)] <-
+    as.numeric(as.Date(entrydate) - as.Date("1899-12-30"))
+
+  # Get info on which HRT types have been used
+  c10aa01 <- any(str_detect(x[paste0("atc_", atc_indices)], "c10aa01"))
+  c10aa03 <- any(str_detect(x[paste0("atc_", atc_indices)], "c10aa03"))
+  c10aa04 <- any(str_detect(x[paste0("atc_", atc_indices)], "c10aa04"))
+  c10aa05 <- any(str_detect(x[paste0("atc_", atc_indices)], "c10aa05"))
+  c10aa07 <- any(str_detect(x[paste0("atc_", atc_indices)], "c10aa07"))
+  statin_mix <- ifelse(length(which(c(c10aa01, c10aa03, c10aa04, c10aa05, c10aa07))) > 1, T, F)
+  statin_ever <- any(c(c10aa01, c10aa03, c10aa04, c10aa05, c10aa07))
+
+  if(length(atc_indices) > 0) {
+    # First starting date and last ending date
+    statin_first_start <- format(as.Date(min(start_dates), origin="1899-12-30"))
+    statin_last_end <- format(as.Date(max(end_dates), origin="1899-12-30"))
+  
+    # Non-overlapping usage period
+    times <- data.table::data.table(start=start_dates,
+                                    end=end_dates,
+                                    id=1)
+    nonoverlap_times <- times[, g := c(0L, cumsum(data.table::shift(start, -1L) > cummax(end))[-.N]), id][, .(min(start), max(end)), .(g, id)]
+    nonoverlap_times$V2 <- nonoverlap_times$V2 + 1
+  
+    statin_usage_period <- sum(as.numeric(nonoverlap_times$V2) -
+                                 as.numeric(nonoverlap_times$V1))
+  } else {
+    statin_first_start = statin_last_end <- NA
+    statin_ever = statin_usage_period = c10aa01 = c10aa03 = c10aa04 = c10aa05 = c10aa07 <- 0
+  }
+  
+  # Check if entrydate = last end, then set NA and remember as drug being taken when sampled
+  hrt_last_end_notentrydate <- ifelse(entrydate == hrt_last_end, 
+  																	 NA, hrt_last_end)
+  hrt_status <- ifelse(entrydate == hrt_last_end, 
+  										 2, hrt_ever)
+  
+  statin_last_end_notentrydate <- ifelse(entrydate == statin_last_end,
+  																			NA, statin_last_end)
+  statin_status <- ifelse(entrydate == statin_last_end,
+  												2, statin_ever)
+
+  return(c("studyid"=studyid, "hrt_ever"=hrt_ever, "hrt_status"=hrt_status,
+  				 "p"=p, "e"=e, "pe"=pe, "hrt_mix"=mix,
+    "hrt_first_start"=hrt_first_start, "hrt_last_end"=hrt_last_end,
+    "hrt_usage_period"=hrt_usage_period, "hrt_end_notentrydate"=hrt_last_end_notentrydate, 
+    "statin_ever"=statin_ever, "statin_status"=statin_status,
+    "c10aa01"=c10aa01, "c10aa03"=c10aa03, "c10aa04"=c10aa04,
+    "c10aa05"=c10aa05, "c10aa07"=c10aa07, "statin_mix"=statin_mix,
+    "statin_first_start"=statin_first_start, "statin_last_end"=statin_last_end,
+    "statin_usage_period"=statin_usage_period,
+    "statin_end_notentrydate"=statin_last_end_notentrydate
+  ))
+}) %>%
+  t() %>%
+  as.data.frame()
+
+rownames(hrt_statin_info) <- hrt_statin_info$studyid
+hrt_statin_info[hrt_statin_info == T] <- "1"
+hrt_statin_info[hrt_statin_info == F] <- "0"
+
+hrt_statin_info[is.na(hrt_statin_info$hrt_status), "hrt_status"] <- 0
+hrt_statin_info[is.na(hrt_statin_info$statin_status), "statin_status"] <- 0
+
+```
+
+
+### Table 1
+
+```{r}
+
+# table 1 for results
+
+# Remove case that is missing all clinical information and case that has only prevalent diagnoses, along with their controls
+matchid_remove <- 
+  c(sinfo %>% 
+      filter(Class == "Case" & is.na(hospital) & is.na(entry.date)) %>%
+      pull(matchid),
+    sinfo %>% 
+      filter(Class == "Case" & prevalent_entry == 1 & incident_entry == 0) %>%
+      pull(matchid))
+sinfo <- sinfo %>% filter(!matchid %in% matchid_remove)
+
+mfi <- mfi[rownames(sinfo), ]
+mfi_list <- lapply(mfi_list, function(x) x[rownames(mfi), ])
+
+sinfo_t1 <- sinfo[which(sinfo$Class %in% c("Case", "Control", "Other")), ]
+sinfo_t1 <- sinfo_t1[which(sinfo_t1$replicate != "2"), ]
+sinfo_t1[which(sinfo_t1$Class == "Other"), "Class"] <- "Double"
+
+# Update hospital information
+sinfo_t1[which(sinfo_t1$hospital == "St Nicolai i Helsingborg"), "hospital"] <- 
+  "Lasarettet i Helsingborg"
+sinfo_t1[which(sinfo_t1$hospital == "Sodra Station"), "hospital"] <- 
+  "Sodersjukhuset"
+sinfo_t1[which(sinfo_t1$hospital == "Lasarettet i Helsingborg"), "hospital"] <- 
+  "Helsingborg Hospital"
+sinfo_t1[which(sinfo_t1$hospital == "Sodersjukhuset"), "hospital"] <- 
+  "Stockholm South General Hospital"
+sinfo_t1[which(sinfo_t1$hospital == "Skanes universitetssjukhus, Lund"), "hospital"] <- 
+  "Skåne University Hospital, Lund"
+sinfo_t1[which(sinfo_t1$hospital == "Lasarettet i Landskrona"), "hospital"] <- 
+  "Landskrona Hospital"
+
+# Keep the first sample of doubles (or whichever if same age at sampling)
+doub <- unique(sinfo_t1[which(sinfo_t1$Class == "Double"), "Tube.label"])
+excl_double <- c()
+for (d in doub) {
+  samps <- which(sinfo_t1$Tube.label == d)
+  ages <- sinfo_t1[samps, "Sampling.age"]
+  
+  if (ages[1] == ages[2]) {
+    excl_double <- append(excl_double, samps[1]) 
+  } else {
+    excl_double <- append(excl_double, samps[which(ages == max(ages))])
+  }
+}
+sinfo_t1 <- sinfo_t1[-excl_double, ]
+
+# Add and merge some variables to sinfo (HRT, statin, ER, PR, HER2, tumour size, invasiveness)
+# Remove tumour-related info for controls as it is irrelevant, also for doubles as they were all cancer-free on selection
+rownames(sinfo_t1) <- sinfo_t1$Tube.label
+sinfo_t1[intersect(rownames(sinfo_t1), rownames(new_tumour_info)), 
+				 c("er_newest", "pr_newest", "her2_newest", "invasiveness_newest", "size_newest", "nottingham_newest")] <- 
+	new_tumour_info[intersect(rownames(sinfo_t1), rownames(new_tumour_info)), 
+									c("er_new", "pr_new", "her2_new", "inv_new", "tsize_new", "nottingham_new")]
+sinfo_t1[intersect(rownames(sinfo_t1), rownames(hrt_statin_info)), 
+				 c("hrt_status_new", "statin_status")] <- 
+	hrt_statin_info[intersect(rownames(sinfo_t1), rownames(hrt_statin_info)),
+									c("hrt_status", "statin_status")]
+
+sinfo_t1$size_newest <- ifelse(sinfo_t1$size_newest < 20, "1", "2")
+sinfo_t1[, c("er_merge", "pr_merge", "her2_merge", "inv_merge", "tsize_merge", "nhg_merge", "hrt_status_merge")] <- apply(sinfo_t1, 1, function(x) {
+	er_merge <- ifelse(is.na(x["er_newest"]) & !is.na(x["A100ER.recode"]), 
+										 ifelse(x["A100ER.recode"] == "Positive", 1, 0), 
+										 x["er_newest"])
+	
+	pr_merge <- ifelse(is.na(x["pr_newest"]) & !is.na(x["A100PR.recode"]),
+										 ifelse(x["A100PR.recode"] == "Positive", 1, 0), 
+										 x["pr_newest"]) 
+	
+	her2_merge <- ifelse(is.na(x["her2_newest"]) & !is.na(x["her2.status"]),
+													x["her2.status"], x["her2_newest"])
+	
+	inv_merge <- ifelse(is.na(x["invasiveness_newest"]) & !is.na(x["A090Inv.recode"]),
+											ifelse(x["A090Inv"] == 1, 1, 0), 
+											x["invasiveness_newest"])
+	
+	tsize_merge <- ifelse(is.na(x["size_newest"]) & !is.na(x["t.recode"]),
+												x["t.recode"], 
+												x["size_new_discrete"])
+	
+	nhg_merge <- ifelse(is.na(x["nottingham_newest"]) & !is.na(x["A100NHG"]),
+											 x["A100NHG"], x["nottingham_newest"])
+	
+	# "Second" merging scheme for HRT, take old info if prescription data is missing or 0
+	hrt_status_merge2 <- ifelse((is.na(x["hrt_status_new"]) & !is.na(x["hrt.status"])) | (x["hrt_status_new"] == 0 & !is.na(x["hrt.status"])),
+           x["hrt.status"], x["hrt_status_new"])
+	
+	return(c("er_merge"=er_merge, 
+					 "pr_merge"=pr_merge,
+					 "her2_merge"=her2_merge, 
+					 "inv_merge"=inv_merge,
+					 "tsize_merge"=tsize_merge,
+					 "nhg_merge"=nhg_merge, 
+					 "hrt_status_merge"=hrt_status_merge2))
+}) %>% t() %>% as.data.frame()
+
+sinfo_t1[which(sinfo_t1$Class == "Control" | sinfo_t1$Class == "Double"), c("er_merge", "pr_merge", "her2_merge", "inv_merge", "tsize_merge", "nhg_merge", "n.recode")] <- NA
+
+# One NHG is "4" which cannot be, use old value for that one
+sinfo_t1[which(sinfo_t1$nhg_merge == 4), "nhg_merge"] <- 
+	sinfo_t1[which(sinfo_t1$nhg_merge == 4), "A100NHG"]
+
+sinfo_t1$statin_status <- factor(sinfo_t1$statin_status, 
+																 levels=c("0", "1", "2"), 
+																 labels=c("Never taken", "Taken before", "Taking at sampling"))
+
+sinfo_t1$parity <- factor(sinfo_t1$parity, 
+													levels=c("0", "1"),
+													labels=c("Never given birth", "Has given birth"))
+
+sinfo_t1$er_merge <- factor(sinfo_t1$er_merge, levels=c("0", "1"), labels=c("Negative", "Positive"))
+
+sinfo_t1$pr_merge <- factor(sinfo_t1$pr_merge, levels=c("0", "1"), labels=c("Negative", "Positive"))
+
+sinfo_t1$her2_merge <- factor(sinfo_t1$her2_merge, levels=c("0", "1"), labels=c("Negative", "Positive"))
+
+sinfo_t1$postmenop <- factor(sinfo_t1$postmenop, levels=c("0", "1"),
+                       labels=c("Premenopausal", "Postmenopausal"))
+
+sinfo_t1$tsize_merge <- factor(sinfo_t1$tsize_merge, 
+															 levels=c(1, 2),
+															 labels=c("< 20 mm", ">= 20 mm"))
+
+sinfo_t1$n.recode <- factor(sinfo_t1$n.recode, 
+                            levels=c(0, 1),
+                            labels=c("No", "Yes"))
+
+sinfo_t1$inv_merge <- factor(sinfo_t1$inv_merge, 
+                                  levels=c(1, 0),
+                                  labels=c("Invasive", "Carcinoma in situ"))
+
+sinfo_t1$hrt_status_merge <- factor(sinfo_t1$hrt_status_merge,
+																		levels=c(0, 1, 2), 
+																		labels=c("Never taken", "Taken before", "Taking at sampling"))
+
+tbl1_labels <- list(
+  variables=list(Sampling.age="Age",
+                 bmi="BMI",
+                 hospital="Sampling station",
+                 postmenop="Menopausal status", 
+                 area.dens="Dense area (cm2)",
+  							 hrt_status_merge="HRT status",
+  							 statin_status="Statin status",
+  							 smoke_pack_year="Smoking (packs per year)",
+  							 alcohol_g_week="Alcohol intake (g per week)", 
+  							 parity="Ever given birth", 
+                 er_merge="ER status",
+                 pr_merge="PR status",
+                 her2_merge="HER2 status",
+  							 inv_merge="Invasiveness",
+                 tsize_merge="Tumour size",
+                 n.recode="Lymph node metastasis",
+                 nhg_merge="Nottingham Histologic Grade"
+                 )
+  )
+
+tbl1_strata <- c(list(Total=sinfo_t1 %>% filter(Class != "Double")), split(sinfo_t1 %>% filter(Class != "Double"), sinfo_t1 %>% filter(Class != "Double") %>% pull(Class))) 
+
+table1(tbl1_strata, tbl1_labels)
+
+# Table 1 for supplementary, with doubles (=d)
+tbl1_d_strata <- c(list(Total=sinfo_t1), split(sinfo_t1, sinfo_t1$Class))
+table1(tbl1_d_strata, tbl1_labels)
+
+```
+
+```{r}
+
+# Plot UMAP coloured by sampling station
+tbl1_umap <- umap(mfi[sinfo_t1 %>% filter(Class %in% c("Case", "Control", "Double")) %>% pull(new.names), -1], rseed=123)
+
+sinfo_t1[, c("UMAP1", "UMAP2")] <- c(tbl1_umap$layout[, 1], tbl1_umap$layout[, 2])
+
+hosp_umap <- ggplot(sinfo_t1 %>% select(hospital, UMAP1, UMAP2)) + 
+	geom_point(aes(x = UMAP1, y = UMAP2, colour = hospital), size = 2, alpha = 0.8) + 
+	scale_colour_brewer(palette = "Paired") + 
+	labs(colour = "Sampling station") + 
+  theme_classic() + 
+	theme(legend.text = element_text(size = 12),
+				legend.title = element_text(size = 15),
+				axis.text = element_text(size = 12),
+				axis.title = element_text(size = 15)) 
+hosp_umap
+```
+
+
+

@@ -1,0 +1,278 @@
+---
+title: "normalisation"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+params: 
+  step_vec: 0
+  step_nr: 0
+  start_time: 0
+  absPQN: 0
+  ma96: 0
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Leo Dahl  
+2020-02-11
+
+This is step number `r params$step_nr` in a workflow containing the steps  
+`r params$step_vec`.  
+Main script started on `r params$start_time`, this step started on `r Sys.time()`.  
+Output files are generated in  
+`r "home/.../results/"`.
+
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+
+</details>
+
+
+# Normalisation
+
+UMAP of the data before normalisation.
+
+```{r some preparation}
+
+# Triggers for displaying text and performing methods
+if (params$absPQN != 0) {
+  do_abspqn <- TRUE
+} else {
+  do_abspqn <- FALSE
+}
+
+if (params$ma96 != 0) {
+  do_ma96 <- TRUE
+} else {
+  do_ma96 <- FALSE
+}
+
+# Log transform data
+mfi[, -1] <- log(mfi[, -1])
+
+for (assay in 1:length(mfi_list)) {
+  mfi_list[[assay]] <- log(mfi_list[[assay]])
+}
+
+# Remove empty wells and antibodies that failed CET since not used at all from here on (?)
+# But keep old ones for safety
+mfi_w_empty <- mfi
+sinfo_w_empty <- sinfo
+binfo1_w_cetfail <- binfo1
+
+mfi <- mfi[sinfo$Class != "Empty", ]
+sinfo <- sinfo[sinfo$Class != "Empty", ]
+binfo1 <- binfo1[binfo1$cet.fail == 0, ]
+
+
+```
+
+
+```{r umap and density before normalisation, warning=F}
+
+# Perform and plot UMAP before normalisation
+umap_nonorm <- umap_casecontrol(mfi, sinfo)
+
+plot_umap(umap_nonorm, sinfo[sinfo$Class == "Case" | sinfo$Class == "Control" | sinfo$Class == "Other", ], T, F)$class
+
+# Plot correlation density before normalisation
+cordens_nonorm <- cor_dens(mfi, sinfo, xrange=c(0.85, 1), yrange=c(0, 340), plotname="No normalisation")
+cordens_nonorm
+
+```
+
+
+`r if(do_abspqn){"#### AbsPQN"}`
+`r if(do_abspqn){"The data is normalised using Antibody Specific Probabilistic Quotient Normalisation."} `
+
+```{r AbsPQN normalisation between 96 well plates, eval=do_abspqn}
+
+# Retrieve function for AbsPQN
+source("/home/.../scripts/norm_AbsPQN.R")
+
+# Make a list with each assay divided into 384-well plates that are divided into 96-well plates, to be able to apply AbsPQN for each 96-well plate
+mfi_list_div <- vector("list", length(mfi_list))
+names(mfi_list_div) <- names(mfi_list)
+
+for (assay in 1:length(mfi_list_div)) {
+  mfi_list_div[[assay]] <- vector("list", 2)
+  names(mfi_list_div[[assay]]) <- c("plate384_1", "plate384_2")
+  
+  for (plate384 in 1:2) {
+    mfi_list_div[[assay]][[plate384]] <- vector("list", 4)
+    names(mfi_list_div[[assay]][[plate384]]) <- c("plate96_1",
+                                                  "plate96_2",
+                                                  "plate96_3",
+                                                  "plate96_4")
+    
+    for (plate96 in 1:4) {
+      # Empty wells in mfi_list removed here
+      mfi_list_div[[assay]][[plate384]][[plate96]] <- mfi_list[[assay]][
+        sinfo_w_empty$plate384 == plate384 
+        & sinfo_w_empty$plate96 == plate96 
+        & sinfo_w_empty$Class != "Empty", ]
+
+      rownames(mfi_list_div[[assay]][[plate384]][[plate96]]) <- rownames(mfi_list[[assay]][
+        sinfo_w_empty$plate384 == plate384 
+        & sinfo_w_empty$plate96 == plate96 
+        & sinfo_w_empty$Class != "Empty", ])
+    }
+  }
+}
+
+# Apply AbsPQN to each 96-well plate, assay-wise
+mfi_abspqn <- lapply(mfi_list_div, function(assay) {
+  lapply(assay, function(plate384) {
+    lapply(plate384, function(plate96) {
+      as.data.frame(abspqn(as.matrix(plate96)))
+    })
+  })
+})
+
+# Update mfi dataframe by combining dataframes using the bind_rows function
+# Want to update the main mfi dataframe so it can be used in other normalisation steps regardless of which steps have been performed before
+# bind_rows function does not retain the row names (and the documentation does not mention any way to do it) so some extra fiddling is done
+mfi_list <- lapply(mfi_abspqn, function(assay) {
+  br1 <- lapply(assay, function(plate384) {
+    row_names <- c(rownames(plate384[[1]]),
+                   rownames(plate384[[2]]),
+                   rownames(plate384[[3]]),
+                   rownames(plate384[[4]]))
+    br2 <- bind_rows(plate384)
+    rownames(br2) <- row_names
+    return(br2)
+  })
+  row_names <- c(rownames(br1[[1]]),
+                 rownames(br1[[2]]))
+  br1 <- bind_rows(br1)
+  rownames(br1) <- row_names
+  return(br1)
+})
+
+mfi <- cbind("sample.antibody"=mfi$sample.antibody,
+             mfi_list$A3,
+             mfi_list$A4,
+             mfi_list$A1,
+             mfi_list$A2)
+
+
+```
+
+
+`r if(do_abspqn){"After AbsPQN the data looks like this"}` 
+
+```{r plot variation after abspqn, eval=do_abspqn, warning=F}
+
+# Do UMAP and plot again to see difference after AbsPQN
+umap_norm <- umap_casecontrol(mfi, sinfo)
+plot_umap(umap_norm, sinfo[sinfo$Class == "Case" | sinfo$Class == "Control" | sinfo$Class == "Other", ], T, F)$class
+
+# Correlation density after AbsPQN, keep output plot to be able to merge with later plot for report
+cordens_abspqn <- cor_dens(mfi, sinfo, xrange=c(0.85, 1), yrange=c(0, 340), plotname="After AbsPQN")
+cordens_abspqn
+
+```
+
+
+`r if(do_ma96){"#### MA for 96-well plate effects"}`
+`r if(do_ma96){"The data is normalised using MA for between-plate effects of 96-well plates. The variation looks like this before normalisation."}`
+
+```{r MA normalisation 96 well plates, eval=do_ma96}
+
+# Look at plate variation
+plot_96well_box(mfi[, -1], sinfo)
+
+# MA normalisation for between-384plate effects, remove empty wells
+mfi_MAnorm <- normn_MA(mD=mfi[, -1], 
+                     expGroup=sinfo$plate96)
+
+# Update values in mfi data frame
+mfi <- data.frame("sample.antibody"=mfi$sample.antibody,
+                  mfi_MAnorm)
+
+```
+
+`r if(do_ma96){"This is what it looks like after the MA normalisation between 96-well plates."}`
+
+```{r box after normalisation, eval=do_ma96}
+
+# Box plots after normalisation
+plot_96well_box(mfi[, -1], sinfo, norm=TRUE)
+
+```
+
+Finally, a UMAP is performed again to look at the data after the normalisation. 
+
+```{r UMAP and density on final normalised data, warning=F}
+
+# List of MFI values
+mfi_list$A1 <- mfi[, which(binfo1$Assay == "AY485") + 1]
+mfi_list$A2 <- mfi[, which(binfo1$Assay == "AY487") + 1]
+mfi_list$A3 <- mfi[, which(binfo1$Assay == "AY146") + 1]
+mfi_list$A4 <- mfi[, which(binfo1$Assay == "AY483") + 1]
+
+# Do and plot results of UMAP on final normalised data
+plot_umap(umap_casecontrol(mfi, sinfo),
+          sinfo[sinfo$Class == "Case" | sinfo$Class == "Control" | sinfo$Class == "Other", ], T, F)$class
+
+cor_dens(mfi, sinfo, xrange=c(0.85, 1), yrange=c(0, 340))
+
+```
+
+
+### Correlation between repeated array
+
+Correlations for antibodies in the repeated array are computed (for plot in antibody_qc.Rmd)
+
+```{r repeat array corr}
+
+# Make sure that antibodies appear in both original and replicate assays
+repl_ass_ab <- colnames(mfi)[str_detect(colnames(mfi), "_A1$|_A2$")]
+
+repl_ass_ab <- substr(repl_ass_ab, 1, nchar(repl_ass_ab) - 3) %>% table()
+
+repl_ass_ab <- names(repl_ass_ab[repl_ass_ab == 2])
+
+# All samples
+repl_ass_cor <- sapply(repl_ass_ab, function(ab) {
+	cor(mfi[, paste0(ab, "_A1")],
+			mfi[, paste0(ab, "_A2")],
+			method="spearman")
+})
+
+# Try without empty samples, pools
+no_epr_sampname <- rownames(sinfo %>% filter(Class %in% c("Case", "Control", "Other")))
+repl_ass_cor_no_epr <- sapply(repl_ass_ab, function(ab) {
+	cor(mfi[no_epr_sampname, paste0(ab, "_A1")],
+			mfi[no_epr_sampname, paste0(ab, "_A2")],
+			method="spearman")
+})
+
+```
+
+
+

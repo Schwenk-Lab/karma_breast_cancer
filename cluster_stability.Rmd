@@ -1,0 +1,210 @@
+---
+title: "cluster_stability"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Leo Dahl 
+2020-08-20
+
+
+This is step number `r step_count` in a workflow containing the steps  
+`r step_list`.  
+Main script started on `r starting_time`, this step started on `r Sys.time()`.  
+Output files are generated in  
+`r out_dir2`.
+
+
+Normalisations that were performed:  
+**`r names(norm_opts[norm_opts == 1])`**
+
+Proteomics data adjusted for:  
+**`r names(which(linnorm_opts == 1))`**
+
+Package used:  
+`r if(use_archetypes){"**archetypes**"}else if(use_archetypal){"**archetypal**"}`
+
+
+<details><summary>Click for details on options</summary>
+This document was generated with the following options:
+
+```{r print options}
+
+print(all_opts)
+
+```
+
+</details>
+
+<details><summary>Click for details on packages</summary>
+This document was generated using the following package versions
+
+```{r}
+
+print(R.Version()$version.string)
+print_packversions()
+
+```
+
+</details>
+
+
+Looking at cluster stability using the Jaccard index. The "real" clustering is compared to new clustering based on a new sample pool. These new samples can be the result of bootstrapping, just a subset of the original samples, replacement of samples with random noise etc. Here, only bootstrapping and subsetting are supported. 
+
+The Jaccard index is calculated as the size of the intersection of the new and old clusters (looking at the samples they include) divided by the size of the union, giving a nubmer between 0 and 1. Higher than 0.75 is considered good, lower than 0.5 is considered not very stable at all (Hennig, 2007).  
+
+
+```{r bootstrap function}
+
+bootstr_resamp <- function(in_samp, samp_num, resamp_num, replace=T) {
+  # Resample rows for bootstrapping, gives a list of data frames 
+  # in_samp, data frame containing samples to resample
+  # samp_num, integer, number of samples in each bootstrap sample
+  # resamp_num, integer, number of iterations for bootstrapping
+  
+  if (resamp_num  > 1) {
+    # List for storing output 
+    out_samp <- vector("list", resamp_num)
+    
+    for (i in 1:resamp_num) {
+      # Select rows to use in new bootstrap samples
+      new_rows <- sample(nrow(in_samp), samp_num, replace=replace)
+      out_samp[[i]] <- in_samp[new_rows, ]
+    }
+  } else {
+    new_rows <- sample(nrow(in_samp), samp_num, replace=replace)
+    out_samp <- in_samp[new_rows, ]
+  }
+  
+  return(out_samp)
+}
+
+
+```
+
+```{r jaccard index function}
+
+jaccard_index <- function(input1, input2) {
+  # Compute Jaccard index for the two inputs, e.g. names of samples from two sample sets
+  intersect_size <- length(intersect(input1, input2))
+  union_size <- length(union(input1, input2))
+  jacc_ind <- intersect_size / union_size
+  
+  return(jacc_ind)
+}
+
+```
+
+
+```{r resampling, eval=T}
+
+set.seed(1234)
+starttime <- Sys.time()
+
+wReplacement <- T           # Resample with or without replacement (TRUE/FALSE)
+resamp_num <- 150           # Number of times to resample
+resamp_size_factor <- 1     # Proportion of original sample pool to use in resampling
+jaccard_list <- vector("list", resamp_num)
+sameclust_warning <- 0
+for (resamp in 1:resamp_num) {
+  
+  # Resampling
+  q <- bootstr_resamp(mfi, floor(nrow(mfi)*resamp_size_factor), 1, replace=wReplacement)
+  # Archetypal analysis
+  arch_boot <- archetypal(df=q[, -1], 
+                          kappas=n_arch, 
+                          method=init_method,
+                          verbose=F)
+  
+  # Get cluster memberships and rearrange clusters to be in ascending order of size
+  archdf_boot <- data.frame("sample"=q$sample.antibody,
+                            "old_cluster"=max.col(arch_boot$A))
+  
+  new_order_boot <- order(table(archdf_boot$old_cluster))
+  clust_membership_boot <- vector("character", length(archdf_boot$old_cluster))
+  for (i in 1:n_arch) {
+    clust_membership_boot[archdf_boot$old_cluster == new_order_boot[i]] <- i
+  }
+  
+  arch_coordinates_boot <- arch_boot$BY[new_order, ]
+  arch_boot$BY <- arch_coordinates_boot
+  
+  archdf_boot$cluster <- as.character(clust_membership_boot)
+  
+  # Compute the Jaccard index for all combinations of clusters, then pick out the ones with the highest index, since those are the ones that are most likely to be the corresponding clusters
+  
+  # Split samples into list elements based on cluster
+  oldsamp <- split(arch_df$sample, arch_df$cluster)
+  newsamp <- split(archdf_boot$sample, archdf_boot$cluster)
+  
+  # Jaccard index for all combinations of old + new clusters
+  jinds <- lapply(oldsamp, function(elem1) {
+    q <- lapply(newsamp, function(elem2) {
+      jaccard_index(elem1, elem2)
+    })
+    unlist(q)
+  })
+  
+  # For each old cluster, pick out new cluster with highest index
+  jimax <- lapply(jinds, function(clust) {
+    maxji <- max(clust)
+    maxclust <- which(clust == maxji)
+    return(c("maxji"=maxji, "cluster"=maxclust))
+  })
+  
+  # See if any old clusters are compared to the same new cluster and if so, count occurrence
+  # Bind together list into matrix to use duplicated on column
+  jimatrix <- do.call(rbind, jimax)
+  sameclust_comparisons <- duplicated(jimatrix[, 2]) %>%
+    which() %>%
+    length()
+  
+  jaccard_list[[resamp]] <- jimatrix[, 1]
+  
+  sameclust_warning <- sameclust_warning + sameclust_comparisons
+}
+
+# Get means and calculate how many sample sets were used and not discarded due to comparison to same cluster
+jaccard_means <- colMeans(do.call(rbind, jaccard_list), na.rm=T)
+jaccard_sd <- apply(do.call(rbind, jaccard_list), 2, function(x) sd(x))
+used_sampsets <- length(which(is.na(do.call(rbind, jaccard_list)[, 1]) == F))
+resamp_stats <- c("resamp_num"=resamp_num, 
+                  "used_sampsets"=used_sampsets,
+                  "ratio"=used_sampsets/resamp_num,
+                  "sameclust_warning"=sameclust_warning)
+
+stoptime <- Sys.time()
+tottime <- stoptime - starttime
+print(tottime)
+
+```
+
+`r floor(nrow(mfi)*resamp_size_factor)` samples were resampled 
+`r ifelse(wReplacement, "with", "without")` replacement. 
+`r resamp_stats["resamp_num"]` resamplings were used to compute the mean Jaccard index. 
+The mean Jaccard indices were as follows
+
+```{r mean jaccard indices table}
+
+kable(data.frame(t(jaccard_means)), col.names = paste("Cluster", as.character(1:n_arch)))
+
+```
+
+Standard deviations for the indices were
+
+```{r jaccard index sd}
+
+kable(data.frame(t(jaccard_sd)), col.names = paste("Cluster", as.character(1:n_arch)))
+
+```
+
+
+
