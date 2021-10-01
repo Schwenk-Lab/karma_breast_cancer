@@ -141,6 +141,11 @@ for (resamp in 1:resamp_num) {
   
   # Compute the Jaccard index for all combinations of clusters, then pick out the ones with the highest index, since those are the ones that are most likely to be the corresponding clusters
   
+  # Include only samples drawn in the bootstrap sampling
+  oldclust <- arch_df$cluster
+  names(oldclust) <- arch_df$sample
+  oldclust <- oldclust[unique(archdf_boot$sample)]
+  
   # Split samples into list elements based on cluster
   oldsamp <- split(arch_df$sample, arch_df$cluster)
   newsamp <- split(archdf_boot$sample, archdf_boot$cluster)
