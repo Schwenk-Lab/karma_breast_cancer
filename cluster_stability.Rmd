@@ -147,7 +147,7 @@ for (resamp in 1:resamp_num) {
   oldclust <- oldclust[unique(archdf_boot$sample)]
   
   # Split samples into list elements based on cluster
-  oldsamp <- split(arch_df$sample, arch_df$cluster)
+  oldsamp <- split(names(oldclust), oldclust)
   newsamp <- split(archdf_boot$sample, archdf_boot$cluster)
   
   # Jaccard index for all combinations of old + new clusters
