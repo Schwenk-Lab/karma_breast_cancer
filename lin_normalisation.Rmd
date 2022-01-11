@@ -243,13 +243,15 @@ repl_stats <- data.frame(repl_eucl, repl_corr, rnd_eucl_repl, rnd_corr_repl) %>%
 dbl_eucl_dens <- ggplot(dbl_stats %>% filter(variable %in% c("dbl_eucl", "rnd_eucl_dbl"))) + 
 	geom_density(aes(x = value, y = ..scaled.., colour = variable), size = 2) + 
 	labs(x = "Euclidean distance", y = "Density", colour = "Sample") + 
-	scale_colour_hue(labels = c("dbl_eucl"="Double", "rnd_eucl_dbl"="Random")) + 
+	scale_colour_manual(labels = c("dbl_eucl"="Double", "rnd_eucl_dbl"="Random"),
+	                    values = brewer.pal(3, "Set2")) +
 	xlim(2, 15) + 
   theme_classic()
 repl_eucl_dens <- ggplot(repl_stats %>% filter(variable %in% c("repl_eucl", "rnd_eucl_repl"))) +
 	geom_density(aes(x = value, y = ..scaled.., colour = variable), size = 2) +
 	labs(x = "Euclidean distance", y = "Density", colour = "Sample") + 
-	scale_colour_hue(labels = c("repl_eucl"="Replicate", "rnd_eucl_repl"="Random")) +
+	scale_colour_manual(labels = c("repl_eucl"="Replicate", "rnd_eucl_repl"="Random"),
+	                    values = brewer.pal(3, "Set2")) +
 	xlim(2, 15) +
   theme_classic()
 
@@ -341,12 +343,12 @@ umap_after_removal$entrydate
 ```
 
 ```{r logreg and clogit options, message=F, warning=F}
+# Run logistic regression or conditional logistic regression if any was selected at the beginning
 
 do_logreg <- ifelse(linnorm_opts["logreg"] == 1, T, F)
 
 do_clogit <- ifelse(linnorm_opts["clogit"] == 1, T, F)
 
-# If stuff here
 if (do_logreg & do_clogit) {
 	render(input = paste0(script_dir, "logreg_and_clogit.Rmd"), 
 				 output_file = paste0(out_dir, Sys.Date(), "_logreg_and_clogit.html"))

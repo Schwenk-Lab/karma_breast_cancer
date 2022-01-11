@@ -226,13 +226,13 @@ cor_dens <- function(m, s, xrange=NULL, yrange=NULL, plotname="") {
                         ))
   
   pl <- ggplot(data = to_plot) +
-    geom_density(aes(Correlation_Coefficient, colour = Sample)) +
+    geom_density(aes(Correlation_Coefficient, colour = Sample), size = 1.5) +
     scale_colour_discrete(breaks=c("Random", "Double", "Replicate")) + 
     # Vertical lines for medians, but kind of just in the way when the peaks are thin
     # geom_vline(aes(xintercept = median(rest_cor)), lty="dotted") +
     # geom_vline(aes(xintercept = median(double_cor)), lty = "dotted") +
     # geom_vline(aes(xintercept = median(repl_cor)), lty = "dotted") +
-    coord_cartesian(xlim = c(0.85, 1)) + # Just hard-coding limits for now, should think of better way
+    coord_cartesian(xlim = c(0.85, 1)) +
     labs(title = plotname,
          x = "Correlation coefficient",
          y = "Density",
@@ -244,7 +244,8 @@ cor_dens <- function(m, s, xrange=NULL, yrange=NULL, plotname="") {
           axis.title = element_text(size = 12),
           legend.text = element_text(size = 12),
           legend.title = element_text(size = 14),
-          axis.text = element_text(size = 11))
+          axis.text = element_text(size = 11)) +
+    scale_colour_brewer(palette = "Set2")
   
   # If x limits or y limits are specified (will reset the previous hard-coded limits for x axis)
   if (is.null(xrange) == F & is.null(yrange) == F) {
@@ -282,48 +283,48 @@ plot_pc123 <- function(in_df, colourby, only12=F,
   
   if (weighted) {
     pc12 <- pc_xy + 
-      geom_point(mapping = aes_string(x = "PC1", y = "PC2", colour = colourby, alpha = "weights")) + 
+      geom_point(mapping = aes_string(x = "PC1", y = "PC2", colour = colourby, alpha = "weights", size = 3)) + 
       labs(title = "PC1 vs PC2")
-  
+    
     pc13 <- pc_xy + 
-      geom_point(mapping = aes_string(x = "PC1", y = "PC3", colour = colourby, alpha = "weights")) + 
+      geom_point(mapping = aes_string(x = "PC1", y = "PC3", colour = colourby, alpha = "weights", size = 3)) + 
       labs(title = "PC1 vs PC3")
-  
+    
     pc23 <- pc_xy + 
-      geom_point(mapping = aes_string(x = "PC2", y = "PC3", colour = colourby, alpha = "weights")) + 
+      geom_point(mapping = aes_string(x = "PC2", y = "PC3", colour = colourby, alpha = "weights", size = 3)) + 
       labs(title = "PC2 vs PC3")
   } else {
     pc12 <- pc_xy + 
-      geom_point(mapping = aes_string(x = "PC1", y = "PC2", colour = colourby)) + 
+      geom_point(mapping = aes_string(x = "PC1", y = "PC2", colour = colourby), size = 3) + 
       labs(title = "PC1 vs PC2")
     
     pc13 <- pc_xy +
-      geom_point(mapping = aes_string(x = "PC1", y = "PC3", colour = colourby)) + 
+      geom_point(mapping = aes_string(x = "PC1", y = "PC3", colour = colourby), size = 3) + 
       labs(title = "PC1 vs PC3")
     
     pc23 <- pc_xy + 
-      geom_point(mapping = aes_string(x = "PC2", y = "PC3", colour = colourby)) + 
+      geom_point(mapping = aes_string(x = "PC2", y = "PC3", colour = colourby), size = 3) + 
       labs(title = "PC2 vs PC3")
   }
   
   if (class(dimred_arch) == "data.frame") {
     pc12 <- pc12 + 
       geom_text(data = dimred_arch,
-                 mapping = aes(x = PC1, y = PC2), 
-                 label = as.character(1:nrow(dimred_arch)), 
-                 size = 4)
+                mapping = aes(x = PC1, y = PC2), 
+                label = as.character(1:nrow(dimred_arch)), 
+                size = 6)
     
     pc13 <- pc13 + 
       geom_text(data = dimred_arch,
-                 mapping = aes(x = PC1, y = PC3), 
-                 label = as.character(1:nrow(dimred_arch)), 
-                 size = 4)
+                mapping = aes(x = PC1, y = PC3), 
+                label = as.character(1:nrow(dimred_arch)), 
+                size = 6)
     
     pc23 <- pc23 + 
       geom_text(data = dimred_arch,
-                 mapping = aes(x = PC2, y = PC3), 
-                 label = as.character(1:nrow(dimred_arch)), 
-                 size = 4)
+                mapping = aes(x = PC2, y = PC3), 
+                label = as.character(1:nrow(dimred_arch)), 
+                size = 6)
   }
   
   

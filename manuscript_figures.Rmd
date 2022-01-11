@@ -47,6 +47,9 @@ print(all_opts)
 
 # For converting heatmap to ggplot object and make compatible with patchwork package
 library(ggplotify)
+# For more convenience with annotation
+library(ComplexHeatmap)
+library(circlize)
 
 ```
 
@@ -54,76 +57,73 @@ library(ggplotify)
 Manuscript figures
 ==================
 
-This script generates a few special figures that will be included in the manuscript. Uses objects from many scripts, run everything except 'variation_inspection' up to 'archetypal_analysis' and then also run 'new_clinvar' and 'enrichment_analysis'. Also tables and certain values that will be included in the text. 
+This script generates a few special figures that will be included in the manuscript. Uses objects from many scripts, run everything up to 'archetypal_analysis' and then also run 'new_clinvar' and 'enrichment_analysis'. Also generates tables and certain values that will be included in the text. Some figure numbers will be different from the final figure numbers as figures are moved to and from supplementary or removed entirely. 
 
 ***
 
 PCA, cluster counts and heatmap
 -------------------------------
 
-```{r pca and counts, fig.width=10, fig.height=8}
+```{r pca and counts, fig.width=7, fig.height=7}
 
-library(ggplotify)
-ggheat <- as.ggplot(phm2)
-
-(pc12 + labs(tag = "A", colour = "Cluster") + theme_classic() + 
-    theme(legend.title = element_text(size = 16),
-          legend.text = element_text(size = 13)) + 
-		pc13 + labs(tag = "B", colour = "Cluster") + theme_classic() + 
-    theme(legend.title = element_text(size = 16),
-          legend.text = element_text(size = 13))) / 
-	(pc23 + labs(tag = "C", colour = "Cluster") + theme_classic() + 
-	   theme(legend.title = element_text(size = 16),
-	         legend.text = element_text(size = 13)) + 
-	 	count_plot + theme_classic() + 
-	   theme(legend.position = "none") + labs(tag = "D")) +
-	plot_layout(guides = "collect") 
+themes <- theme_classic() +
+  theme(axis.title = element_text(size = 20, colour = "black"),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.line = element_line(size = 1),
+        legend.position = "none")
+pc12 + themes
+ggsave(paste0(out_dir, Sys.Date(), "_fig2A.pdf"), width = 7, height = 7, units = "in")
+pc13 + themes
+ggsave(paste0(out_dir, Sys.Date(), "_fig2B.pdf"), width = 7, height = 7, units = "in")
+pc23 + themes
+ggsave(paste0(out_dir, Sys.Date(), "_fig2C.pdf"), width = 7, height = 7, units = "in")
+count_plot + themes
+ggsave(paste0(out_dir, Sys.Date(), "_fig2D.pdf"), width = 7, height = 7, units = "in")
 
 ```
 
+```{r heatmap, fig.width=7, fig.height=10}
 
-```{r heatmap and volcano, fig.width=9, fig.height=9}
-
-plt_layout <- c(
-	area(t=1,b=6,l=1,r=3),
-	area(t=7,b=11,l=1,r=2)
-)
-(ggheat + labs(tag = "A")) + 
-	(de_volcano + labs(tag = "B")) +
-	plot_layout(design = plt_layout)
-
+# ComplexHeatmap for more annotation
+col_fun <- colorRamp2(seq(-5, 5, length.out = 101),
+                      colorRampPalette(rev(brewer.pal(n=7, name="RdYlBu")))(101))
+top_annot <- HeatmapAnnotation(Cluster = as.character(annot_df$Cluster),
+                               col = list(Cluster = annot_colour),
+                               show_legend = F)
+chm <- Heatmap(heat_mat, col = col_fun, cluster_columns = F, show_row_names = F, show_column_names = F, name = "Z-score", top_annotation = top_annot, column_split = as.character(annot_df$Cluster))
+ggheat <- as.ggplot(chm)
+ggheat
+ggsave(paste0(out_dir, Sys.Date(), "_fig5A.pdf"), width = 7, height = 10, units = "in")
 ```
 
+```{r volcano, fig.height=6, fig.width=6}
+de_volcano + themes
+ggsave(paste0(out_dir, Sys.Date(), "_fig5B.pdf"), width = 6, height = 6, units = "in")
+```
 
 ***
 
 Age, BMI and BMI-adjusted dense area
 ------------------------------------
 
-```{r age bmi dense area, fig.width=15, warning=FALSE}
+```{r age bmi dense area, fig.width=6, fig.height=6, warning=FALSE}
 
-(plot_results(arch_df, "cluster", "age", printplots=F, printp=F)$boxplot + 
- 	labs(title = NULL, tag = "A")) + 
-    (plot_results(arch_df, "cluster", "bmi", printplots=F, printp=F)$boxplot + 
-     	labs(title = NULL, y = "BMI", tag = "B")) + 
-    (plot_results(arch_df, "cluster", "area.dens.adj", printplots=F, printp=F)$boxplot +
-     	labs(title = NULL, y = "BMI-adjusted dense area (cm^2)", tag = "C")) + 
-    plot_layout(guides = "collect") & 
-  theme_classic() &
-	theme(axis.title = element_text(size = 20),
-				axis.text = element_text(size = 16),
-				legend.title = element_text(size = 20),
-				legend.text = element_text(size = 16),
-				plot.tag = element_text(size = 20)) 
+plot_results(arch_df, "cluster", "age", printplots=F, printp=F)$boxplot + themes + labs(title = NULL)
+ggsave(paste0(out_dir, Sys.Date(), "_fig3A.pdf"), width = 6, height = 6, units = "in")
+plot_results(arch_df, "cluster", "bmi", printplots=F, printp=F)$boxplot + themes + labs(title = NULL, y = "BMI")
+ggsave(paste0(out_dir, Sys.Date(), "_fig3B.pdf"), width = 6, height = 6, units = "in")
+plot_results(arch_df, "cluster", "area.dens.adj", printplots=F, printp=F)$boxplot + themes + labs(title = NULL, y = "BMI-adjusted dense area (cm^2)")
+ggsave(paste0(out_dir, Sys.Date(), "_fig3C.pdf"), width = 6, height = 6, units = "in")
 
 ```
+
 
 ***
 
 Case-control status, HRT ever, HRT status, days between entry and HRT, cluster MHT and case/control status
 ----------------------------------------------------------------------------------------------------------
 
-```{r case control hrt, fig.height=15, fig.width=14, warning=F, message=F}
+```{r case control hrt, fig.height=6, fig.width=6, warning=F, message=F}
 
 # Contingency tables/heatmaps for number of people in the clusters based on MHT and case control status
 clust_mht_class_counts <- arch_df %>%
@@ -156,28 +156,31 @@ contingency_heatmap <- ggplot(clust_mht_class_counts, aes(x = 1, y = hrt_ever_me
   labs(x = "Cluster", y = "Taken MHT ever") + 
   scale_y_discrete(labels = c("0"="No", "1"="Yes"))
 
-casecontrol_hrt_plt_top <- ((plot_results(arch_df, "cluster", "class", printplots=F, printp=F)$rightplot + 
-		labs(fill = "Class")) +
-	(plot_results(arch_df, "cluster", "hrt_ever_merge2", printplots=F, printp=F)$rightplot + 
-			labs(fill = "MHT taken \never") + 
-			scale_fill_hue(labels = c("No", "Yes")))) /
-	((plot_results(arch_df, "cluster", "hrt_status_merge2", printplots=F, printp=F)$rightplot + 
+themes <- theme_classic() +
+  theme(axis.title = element_text(size = 20, colour = "black"),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.line = element_line(size = 1),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 16))
+plot_results(arch_df, "cluster", "class", printplots=F, printp=F)$rightplot + labs(fill = "Class") + themes
+ggsave(paste0(out_dir, Sys.Date(), "_fig4A.pdf"), width = 6, height = 6, units = "in")
+plot_results(arch_df, "cluster", "hrt_ever_merge2", printplots=F, printp=F)$rightplot +
+			labs(fill = "MHT taken \never") + themes
+ggsave(paste0(out_dir, Sys.Date(), "_fig4B.pdf"), width = 6, height = 6, units = "in")
+plot_results(arch_df, "cluster", "hrt_status_merge2", printplots=F, printp=F)$rightplot +
 	 	labs(fill = "MHT status \nat entry") + 
-	 	scale_fill_hue(labels = c("Never taken", "Taken before", "Taking"))) +
-	(plot_results(arch_df, "cluster", "hrt_endentrydiff_merge", printplots=F, printp=F)$boxplot + 
-	 	labs(title = NULL, y = "Years between study entry \nand MHT treatment"))) + 
-  plot_annotation(tag_levels = "A") & 
-  theme_classic() & 
-	theme(axis.title = element_text(size = 20),
-				axis.text = element_text(size = 18),
-				legend.title = element_text(size = 20),
-				legend.text = element_text(size = 16), 
-				plot.tag = element_text(size = 20)) 
-
-casecontrol_hrt_plt_top / contingency_heatmap + 
-  theme(plot.tag = element_text(size = 20))
-
-
+	    scale_fill_manual(labels = c("0"="Never taken", "1"="Taken before", "2"="Taking"),
+	                      values = brewer.pal(3, "Set2")) + themes
+ggsave(paste0(out_dir, Sys.Date(), "_fig4C.pdf"), width = 6, height = 6, units = "in")
+plot_results(arch_df, "cluster", "hrt_endentrydiff_merge", printplots=F, printp=F)$boxplot + 
+	 	labs(title = NULL, y = "Years between study entry \nand MHT treatment") + theme_classic() +
+  theme(axis.title = element_text(size = 20, colour = "black"),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.line = element_line(size = 1),
+        legend.position = "none")
+ggsave(paste0(out_dir, Sys.Date(), "_fig4D.pdf"), width = 6, height = 6, units = "in")
+contingency_heatmap
+ggsave(paste0(out_dir, Sys.Date(), "_fig4E.pdf"), width = 6, height = 6, units = "in")
 ```
 
 
@@ -294,7 +297,8 @@ Correlation before and after normalisation
 ```{r}
 cordens_nonorm + cordens_abspqn + 
 	plot_layout(guides = "collect") &
-  theme_classic()
+  theme_classic() &
+  scale_colour_brewer(palette = "Set2")
 ```
 
 Hospital UMAP
@@ -383,7 +387,7 @@ plot_results(arch_maxalphas, "cluster", "alpha_max", printplots=F)$boxplot + lab
 
 Proportions of sample pairs ending up in the same cluster
 
-```{r}
+```{r, message=F}
 
 prop_plt + 
     scale_x_discrete(labels=paste0(as.character(levels(same_cluster_df$sample_type)), 
@@ -391,7 +395,9 @@ prop_plt +
 	theme(axis.title = element_text(size = 16),
 				axis.text = element_text(size = 14),
 				legend.title = element_blank(),
-				legend.text = element_text(size = 14)) 
+				legend.text = element_text(size = 14)) +
+  scale_fill_manual(labels = c("TRUE" = "Same cluster", "FALSE" = "Different clusters"),
+                    values = brewer.pal(3, "Set2"))
 
 ```
 
@@ -405,7 +411,8 @@ pred_diff + real_diff +
 				axis.text = element_text(size = 13),
 				legend.title = element_text(size = 15),
 				legend.text = element_text(size = 13), 
-				plot.tag = element_text(size = 15))
+				plot.tag = element_text(size = 15)) &
+  scale_fill_manual(values = rep("white", 2))
 
 ```
 
@@ -423,7 +430,7 @@ plt_layout <- c(
 
 (plot_results(arch_df, "cluster", "statin_ever", printplots=F, printp=F)$rightplot +
   labs(fill = "Used statins \never") + 
-  scale_fill_hue(labels = c("0"="No", "1"="Yes"))) + 
+  scale_fill_manual(labels = c("0"="No", "1"="Yes"), values = brewer.pal(3, "Set2"))) +
   (plot_results(arch_df %>% filter(statin_philicity != "None"), "cluster", "statin_philicity",
              printplots=F, printp=F)$rightplot +
   labs(fill = "Philicity of \nused statins")) + 
@@ -447,15 +454,14 @@ plot_results(arch_df %>% mutate(cluster = ifelse(cluster == 1, cluster, "Other")
              "cluster", "PRS", printp=F, printplots=F)$boxplot + 
   theme_classic() + 
   plot_results(arch_df, "class", "PRS", printp=F, printplots=F)$boxplot + 
-  theme_classic() + 
-  scale_fill_manual(values = c("Case"="#F8766D",
-                               "Control"="#00BFC4")) +
+  theme_classic() +
   plot_annotation(tag_levels = "A") &
   theme(axis.title = element_text(size = 20),
         axis.text = element_text(size = 18), 
         legend.position = "none", 
         plot.tag = element_text(size = 20)) &
-  labs(title = NULL)
+  labs(title = NULL) &
+  scale_fill_manual(values = rep("white", 2))
 
 ```
 
@@ -520,7 +526,9 @@ for (prot in c("PTCH1", "ZP4")) {
       theme(axis.title = element_text(size = 20),
             axis.text = element_text(size = 18), 
             legend.position = "none", 
-            plot.tag = element_text(size = 20))
+            plot.tag = element_text(size = 20)) +
+      scale_fill_manual(values = rep("white", 2)) +
+      scale_x_discrete(labels = c("0"="Never taken", "1"="Taken"))
     
     ptchzp_list[[paste0(prot, ".", cvar)]] <- plt
   }

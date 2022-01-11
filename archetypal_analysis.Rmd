@@ -718,18 +718,14 @@ names(annot_colour) <- c(as.character(1:n_arch))
 col_vec <- colorRampPalette(rev(brewer.pal(n=7, name="RdYlBu")))(100)
 col_scale <- seq(-5, 5, length.out=(1+length(col_vec)))
 
-# phm <- pheatmap(heat_mat, color=col_vec, breaks=col_scale, cluster_cols=F, treeheight_row=0,
-#                 annotation_col=annot_df, annotation_colors=list("Cluster"=annot_colour),
-#                 fontsize_row=0.5, fontsize_col=0.5, border_color=NA)
-
 # Version without row and column names
-phm2 <- pheatmap(heat_mat, colour=col_vec, breaks=col_scale, cluster_cols=F, treeheight_row=0,  annotation_col=annot_df,annotation_colors=list("Cluster"=annot_colour), show_colnames=F, show_rownames=F, border_color=NA)
+phm2 <- pheatmap(heat_mat, colour=col_vec, breaks=col_scale, cluster_cols=F, annotation_col=annot_df,annotation_colors=list("Cluster"=annot_colour), show_colnames=F, show_rownames=F, border_color=NA)
 
 
 ```
 
 
-```{r Save heatmap, eval=F}
+```{r Save heatmap, eval=T}
 
 # Save a heatmap to be able to zoom well
 pheatmap(heat_mat, color=col_vec, breaks=col_scale, cluster_cols=F, treeheight_row=0, cluster_rows=as.hclust(phm$tree_row), annotation_col=annot_df, annotation_colors=list("Archetype"=annot_colour), fontsize_row=0.5, fontsize_col=0.5, border_color=NA, filename=paste0("/home/.../results/results_archetypal_analysis/pheatmap_", Sys.Date(), ".pdf"), height=8, width=12)

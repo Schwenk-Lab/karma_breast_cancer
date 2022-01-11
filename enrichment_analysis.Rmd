@@ -293,14 +293,16 @@ selected_proteins_overlap <- rbind(up_overlap, down_overlap)
 
 datatable(selected_proteins_overlap)
 
-de_volcano <- ggplot(de_res[[1]] %>% mutate(logP = -log10(p_value),
+de_volcano <- ggplot(de_res[[1]] %>%
+                       mutate(logP = -log10(p_value),
                               Selected = ifelse(Gene_name %in%
                                                   selected_proteins_overlap$Gene_name, 
                                                 ifelse(Delta_median < 0, 
                                                        "Downregulated", "Upregulated"), 
-                                                "-"))) + 
-  geom_point(aes(x = Delta_median, y = logP, colour = Selected, shape = Selected)) + 
-	scale_shape_manual(values = c("Downregulated" = 21, "-" = 19, "Upregulated" = 21)) + 
+                                                "-")) %>%
+                       mutate(labs = case_when(Selected %in% c("Downregulated", "Upregulated") ~ Gene_name, T ~ ""))) + 
+  geom_point(aes(x = Delta_median, y = logP, colour = Selected), shape = 19, show.legend = F, size = 1.5) + 
+  geom_text_repel(aes(x = Delta_median, y = logP, label = labs), max.overlaps = 50) +
   scale_colour_manual(values = c("Downregulated" = "blue", "-" = "gray", "Upregulated" = "red")) + 
   labs(x = "Delta median", y = "-log10(p)") + 
   theme_classic() + 
@@ -308,7 +310,8 @@ de_volcano <- ggplot(de_res[[1]] %>% mutate(logP = -log10(p_value),
 				legend.text = element_text(size = 12),
 				axis.text = element_text(size = 12), 
 				axis.title = element_text(size = 14)) +
-	xlim(-4.3, 4.3)
+  scale_x_continuous(breaks = seq(-4, 4, by = 1), limits = c(-4.3, 4.3)) +
+  scale_y_continuous(breaks = 0:20)
 
 de_volcano
 

@@ -1,10 +1,10 @@
-### Function for visualisation of results in Karma archetypal analysis pipeline ###
+### Function for visualisation of results in KARMA1 archetypal analysis pipeline ###
 ### Mainly for visualising archetypes, but can take other groupings ### 
 # Leo Dahl
 # 2020-03-29
 
 plot_results <- function(input_df, groupby, clin_var, 
-                         plot_colour="Paired", stars=T,
+                         plot_colour="Paired", plot_colour_discr="Set2", stars=T,
                          dens_plot=T, printplots=T, printp=T) {
   # Function for plotting clinical parameter to look at differences
   # input_df is a data frame containing at least the column to group by and the column with the clinical variable to analyse
@@ -73,7 +73,7 @@ plot_results <- function(input_df, groupby, clin_var,
         scale_colour_brewer(palette = plot_colour)
     }
     ### Make boxplots ###
-
+    
     # If more than one group, do Wilcoxon rank-sum test (Mann-Whitney U test)
     if (n_grp > 1) {
       
@@ -86,7 +86,7 @@ plot_results <- function(input_df, groupby, clin_var,
                      clin_var]
         )$p.value
       }
-
+      
       pval_out <- pvals
       # Pick out comparisons with p-value below 0.05
       pairs <- pairs[which(pvals < 0.05)]
@@ -113,9 +113,9 @@ plot_results <- function(input_df, groupby, clin_var,
           geom_signif(comparisons = pairs, 
                       step_increase = 0.07,
                       annotations = as.character(pvals),
-          						size = 1, 
-          						textsize = 8,
-          						vjust = 0.5) +
+                      size = 1, 
+                      textsize = 8,
+                      vjust = 0.5) +
           labs(title = paste(clin_ax, "vs", groupax, "and significant Wilcoxon tests")
                , x = groupax, y = clin_ax, fill = groupax) + 
           scale_x_discrete(limits = grp, 
@@ -154,7 +154,12 @@ plot_results <- function(input_df, groupby, clin_var,
       as.data.frame()
     
     colnames(group_n) <- c(groupby, "n")
-    group_n_axistext <- paste0(group_n[, groupby], "\nn=", group_n$n)
+    # group_n_axistext <- paste0(group_n[, groupby], "\nn=", group_n$n)
+    group_n_axistext <- group_n[, groupby]
+    # Make annotation to put inside bars instead
+    n_in_bar <- data.frame("x" = group_n[, groupby],
+                           "y" = rep(0.1, nrow(group_n)),
+                           "n" = paste0("n =\n", group_n$n))
     
     ## Fisher exact test ##
     elem <- sort(unique(input_df[, clin_var]))
@@ -169,7 +174,7 @@ plot_results <- function(input_df, groupby, clin_var,
       if (n_grp > 1) {
         
         pvals <- vector("numeric", ncol(pairs))
-
+        
         # Pick out two rows at a time from contingency table and perform test
         
         for (pair in 1:ncol(pairs)) {
@@ -177,7 +182,7 @@ plot_results <- function(input_df, groupby, clin_var,
           pvals[pair] <- fisher.test(tbl)$p.value %>%
             signif(3)
         }
-
+        
         pval_out <- pvals
         # Pick out comparisons with p-value below 0.05
         pairs <- pairs[which(pvals < 0.05)]
@@ -197,7 +202,7 @@ plot_results <- function(input_df, groupby, clin_var,
                             corr = F, legend = F) %>%
               as.character()
           }
-
+          
           # Set y positions for p-values
           ymin <- 1.03
           ymax <- ymin + (length(pvals)*0.07)
@@ -216,6 +221,7 @@ plot_results <- function(input_df, groupby, clin_var,
             ggplot() +
             aes_string(groupby, "Freq", fill = clin_var) +
             geom_col(position = "fill") +
+            geom_text(data = n_in_bar, aes(x = x, y = y, label = n, fill = NULL), colour = "black") +
             geom_signif(
               comparisons = pairs,
               annotations = pvals,
@@ -225,7 +231,8 @@ plot_results <- function(input_df, groupby, clin_var,
               vjust = 0.5) +
             labs(x = groupax, y = "Proportion") +
             scale_x_discrete(limits = grp,
-                             labels = group_n_axistext)
+                             labels = group_n_axistext) +
+            scale_fill_brewer(palette = plot_colour_discr)
           
           # Names are messed up!
           # instead of groupby and clin_var you get "get(groupby)" 
@@ -238,9 +245,11 @@ plot_results <- function(input_df, groupby, clin_var,
                        filter(is.na(get(clin_var)) == F),
                      mapping = aes_string(x = groupby, fill = clin_var), 
                      position = "fill") +
+            geom_text(data = n_in_bar, aes(x = x, y = y, label = n, fill = NULL), colour = "black") +
             labs(x = groupax, y = "Proportion") + 
             scale_x_discrete(limits = grp,
-                             labels = group_n_axistext)
+                             labels = group_n_axistext) +
+            scale_fill_brewer(palette = plot_colour_discr)
         }
       } else {
         
@@ -252,9 +261,11 @@ plot_results <- function(input_df, groupby, clin_var,
                      filter(is.na(get(clin_var)) == F),
                    mapping = aes_string(x = groupby, fill = clin_var), 
                    position = "fill") +
+          geom_text(data = n_in_bar, aes(x = x, y = y, label = n, fill = NULL), colour = "black") +
           labs(x = groupax, y = "Proportion") + 
           scale_x_discrete(limits = grp,
-                           labels = group_n_axistext)
+                           labels = group_n_axistext) +
+          scale_fill_brewer(palette = plot_colour_discr)
       }
       
     } else {
@@ -265,15 +276,18 @@ plot_results <- function(input_df, groupby, clin_var,
                    filter(is.na(get(clin_var)) == F),
                  mapping = aes_string(x = groupby, fill = clin_var), 
                  position = "fill") +
+        geom_text(data = n_in_bar, aes(x = x, y = y, label = n, fill = NULL), colour = "black") +
         labs(x = groupax, y = "Proportion") + 
         scale_x_discrete(limits = grp,
-                         labels = group_n_axistext)
+                         labels = group_n_axistext) +
+        scale_fill_brewer(palette = plot_colour_discr)
     }
     
     qleft <- q + 
       geom_bar(mapping = aes_string(x = groupby, fill = clin_var), 
                position = "dodge") +
-      labs(x = groupax, y = "Count", caption = " ")
+      labs(x = groupax, y = "Count", caption = " ") +
+      scale_fill_brewer(palette = plot_colour_discr)
     
     q <- qleft + qright + 
       plot_annotation(title = paste(clin_ax, "counts and proportions in", groupax)) +
@@ -321,12 +335,12 @@ plot_results <- function(input_df, groupby, clin_var,
                          "p.value"=pval_out,
                          "pmatrix"=pmat)
         return(plot_out)
-        }
-    } else {
-        if (printplots) {
-          plot(q)
-        }
       }
+    } else {
+      if (printplots) {
+        plot(q)
+      }
+    }
   } else { 
     # Continuous variable
     if (printplots) {

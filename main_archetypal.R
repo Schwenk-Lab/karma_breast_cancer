@@ -23,8 +23,8 @@ library(RColorBrewer)
 library(pheatmap)
 library(gridExtra)  # For making tableGrobs that acn be put in plotting areas
 library(patchwork)  # For putting multiple ggplots in same graphing area
-library(BBmisc)     # For the chunk function, in variation_inspection.Rmd
-library(reshape2)   # For the melt function, in multiple places ex variation_inspection and normalisation.Rmd
+library(BBmisc)
+library(reshape2)   # For the melt function, in multiple places
 library(dplyr)
 library(MDimNormn)  # For the normn_MA function, MA normalisation in normalisation.Rmd
 library(archetypes) # For archetypal analysis
